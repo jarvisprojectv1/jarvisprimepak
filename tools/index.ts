@@ -12,6 +12,7 @@ import { voiceTool } from "./voice";
 import { webTool } from "./web";
 import { reportsTool } from "./reports";
 import { webSearchTool, webFetchTool } from "./web/index";
+import { businessIntelligenceTool } from "./businessIntelligence";
 
 let registered = false;
 
@@ -32,6 +33,10 @@ export function registerBuiltinTools(): void {
     // that actually needs open-web research - see tools/web/.
     webSearchTool,
     webFetchTool,
+    // Phase 11: read-only Business Intelligence query tool - see
+    // tools/businessIntelligence.ts's file header for its no-send/no-write
+    // guarantee.
+    businessIntelligenceTool,
   ]) {
     if (!toolRegistry.get(tool.name)) {
       toolRegistry.register(tool);

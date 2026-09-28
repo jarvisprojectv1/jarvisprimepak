@@ -159,4 +159,28 @@ export async function seedExampleConditionRules(): Promise<void> {
       }),
     },
   });
+
+  // Phase 11 (Business Intelligence, items 32-34): same pattern as
+  // "daily-report" above - the created task is tagged
+  // toolName:"business_intelligence" so the worker executes it DIRECTLY
+  // through the guarded tool registry (tools/businessIntelligence.ts), no
+  // Brain planning round trip needed for this deterministic, always-the-same
+  // weekly action.
+  await prisma.conditionRule.upsert({
+    where: { name: "weekly-review" },
+    update: {},
+    create: {
+      name: "weekly-review",
+      eventType: "SCHEDULE.fired",
+      conditionJson: JSON.stringify({
+        all: [{ field: "payload.jobName", op: "eq", value: "weekly-review" }],
+      }),
+      actionType: "create_task",
+      actionParams: JSON.stringify({
+        title: "Generate weekly business intelligence review",
+        priority: "NORMAL",
+        toolName: "business_intelligence",
+      }),
+    },
+  });
 }

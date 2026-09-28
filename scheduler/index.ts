@@ -362,4 +362,25 @@ export async function registerExampleJobs(): Promise<void> {
       // creates the task; nothing else to do here.
     },
   });
+
+  // Phase 11 (Business Intelligence, items 32-34): a new, genuinely
+  // additive job following the EXACT same registration pattern as
+  // "morning-briefing"/"daily-report" above - the cron callback only
+  // publishes SCHEDULE.fired; the seeded "weekly-review" ConditionRule
+  // (core/conditions/rules.ts) creates a task tagged
+  // toolName:"business_intelligence", so the worker executes it directly
+  // through the guarded tool registry (tools/businessIntelligence.ts),
+  // exactly like the "reports" tool the daily-report job already uses.
+  // Monday 06:00 Asia/Karachi - deliberately does NOT touch
+  // morning-briefing's 05:00 or daily-report's 21:00 schedules.
+  await scheduler.register({
+    name: "weekly-review",
+    triggerType: "weekly",
+    schedule: "0 6 * * 1", // Monday 06:00 Asia/Karachi
+    timezone: "Asia/Karachi",
+    handler: () => {
+      // The ConditionRule matching SCHEDULE.fired{jobName:"weekly-review"}
+      // creates the task; nothing else to do here.
+    },
+  });
 }

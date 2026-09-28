@@ -16,6 +16,7 @@ import { worker } from "../../../core/worker";
 import { seedResearchTopics } from "../../../core/research/topics";
 import { webEventSource } from "../../../core/events/webEventSource";
 import { seedDefaultProductCategories } from "../../../core/crm/businessConfig";
+import { seedCompanyProfile } from "../../../core/business/intelligence/companyProfile";
 
 async function main() {
   applyPendingMigrations();
@@ -63,6 +64,17 @@ async function main() {
     await seedDefaultProductCategories();
   } catch (err) {
     log("WARNING", "boot.product_category_seed_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    // Phase 11 (Business Intelligence, section 3): Prime Pak's own factual
+    // company profile as DATA - idempotent seed, same pattern as the
+    // product-category seed above.
+    await seedCompanyProfile();
+  } catch (err) {
+    log("WARNING", "boot.company_profile_seed_failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   }

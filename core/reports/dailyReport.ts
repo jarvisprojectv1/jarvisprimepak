@@ -9,6 +9,15 @@
 import { prisma } from "../../database/client";
 import { listHeartbeats } from "../worker/heartbeat";
 import { summarizeUsageSince, startOfDayUtc } from "../ai/usage";
+// Phase 11 (Business Intelligence, sections 31-34): extends the existing
+// report generator (never forks a second one - see this file's original
+// header discipline) with a deterministic-only executive-briefing section.
+// No AIProvider is passed here deliberately: the daily report already runs
+// on a schedule with no human waiting on prose, so it stays free/instant and
+// fully reproducible - any AI narrative is opt-in via
+// core/business/intelligence/executiveBriefing.ts's `aiProvider` option,
+// called separately (e.g. from the weekly-review job) when desired.
+import { buildExecutiveBriefing } from "../business/intelligence/executiveBriefing";
 
 export interface TaskSummaryLine {
   id: string;
@@ -71,6 +80,8 @@ export interface DailyReportContent {
     optOutsToday: number;
     note: string;
   };
+  // Phase 11 (Business Intelligence, item 31): see buildBusinessIntelligenceSection() below.
+  businessIntelligence: BusinessIntelligenceSection;
 }
 
 function dateKeyUtc(d: Date): string {
@@ -201,6 +212,50 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
         ? `WhatsApp capability is configured; ${whatsappMessagesSentToday} sent / ${whatsappMessagesReceivedToday} received today, ${whatsappPendingApprovals} approval(s) pending, ${whatsappOptOutsToday} opt-out(s) today.`
         : `WhatsApp sending/receiving is not configured (no WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID/WHATSAPP_BUSINESS_ACCOUNT_ID); any counts below reflect locally-ingested test/mock data only.`,
     },
+    businessIntelligence: await buildBusinessIntelligenceSection(forDate),
+  };
+}
+
+// Phase 11 (item 31): recommendation summary + pipeline-risk/follow-up
+// candidate counts, straight from the deterministic BI snapshot for
+// "today" - no AI call, matching this file's existing "real counts only"
+// discipline for every other section.
+export interface BusinessIntelligenceSection {
+  snapshotId: string;
+  periodLabel: string;
+  pipelineRiskCount: number;
+  followUpCandidateCount: number;
+  dataQualityIssueCount: number;
+  anomalyCount: number;
+  recommendationCount: number;
+  highPriorityRecommendationCount: number;
+  note: string;
+}
+
+async function buildBusinessIntelligenceSection(forDate: Date): Promise<BusinessIntelligenceSection> {
+  const briefing = await buildExecutiveBriefing({ windowName: "TODAY", snapshotType: "DAILY", now: forDate });
+  const risk = briefing.statements["pipeline_risk.stale_leads"];
+  const followUps = briefing.statements["follow_up.candidates"];
+  const dataQuality = briefing.statements["data_quality.report"];
+  const anomalies = briefing.statements["anomaly_detection.result"];
+
+  const pipelineRiskCount = Array.isArray(risk?.value) ? risk.value.length : 0;
+  const followUpCandidateCount = Array.isArray(followUps?.value) ? followUps.value.length : 0;
+  const dq = dataQuality?.value as { duplicateCompanies: number; duplicateContacts: number; duplicateLeads: number; contactsMissingEmailAndPhone: number } | null | undefined;
+  const dataQualityIssueCount = dq ? dq.duplicateCompanies + dq.duplicateContacts + dq.duplicateLeads + dq.contactsMissingEmailAndPhone : 0;
+  const anomalyCount = Array.isArray(anomalies?.value) ? anomalies.value.length : 0;
+  const highPriorityRecommendationCount = briefing.recommendations.filter((r) => r.priority === "HIGH").length;
+
+  return {
+    snapshotId: `${briefing.periodLabel}`,
+    periodLabel: briefing.periodLabel,
+    pipelineRiskCount,
+    followUpCandidateCount,
+    dataQualityIssueCount,
+    anomalyCount,
+    recommendationCount: briefing.recommendations.length,
+    highPriorityRecommendationCount,
+    note: `Business Intelligence (Phase 11): ${pipelineRiskCount} stale pipeline lead(s), ${followUpCandidateCount} follow-up candidate(s), ${dataQualityIssueCount} data-quality issue(s), ${anomalyCount} anomaly signal(s), ${briefing.recommendations.length} recommendation(s) (${highPriorityRecommendationCount} HIGH priority). All figures are deterministic (no AI call in the daily report path).`,
   };
 }
 
