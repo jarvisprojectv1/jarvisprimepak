@@ -507,6 +507,109 @@ model Skill {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6 (Web Research & Autonomous Intelligence): source provenance.
+//
+// One ResearchRun per research task/query. Each source it looked at
+// (a search-result row or a fetched page) is a ResearchSource. Each concrete
+// piece of extracted information from a source is a ResearchEvidence row,
+// classified FACT | SOURCE_CLAIM | ANALYSIS | UNCERTAINTY (a source claiming
+// something is SOURCE_CLAIM, never automatically FACT). Memory rows written
+// from research set `relatedEntity` to the ResearchEvidence id so
+// Memory -> ResearchEvidence -> ResearchSource -> ResearchRun is a real,
+// queryable provenance chain ("where did you get this information").
+// ---------------------------------------------------------------------------
+model ResearchRun {
+  id          String    @id @default(uuid())
+  taskId      String?
+  query       String
+  status      String    @default("RUNNING") // RUNNING | SUCCESS | PARTIAL | FAILED | NOT_IMPLEMENTED
+  createdBy   String // Identity label, e.g. "agent:research", "service:worker"
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  summary     String? // final synthesized summary, if any
+
+  sources ResearchSource[]
+
+  @@index([taskId])
+  @@map("research_runs")
+}
+
+model ResearchSource {
+  id               String    @id @default(uuid())
+  researchRunId    String
+  url              String
+  canonicalUrl     String
+  domain           String
+  title            String?
+  retrievedAt      DateTime  @default(now())
+  publishedAt      DateTime?
+  contentHash      String? // sha256 of extracted text, for dedup/change detection
+  sourceType       String // search_result | fetched_page
+  discoveredByQuery String?
+
+  researchRun ResearchRun        @relation(fields: [researchRunId], references: [id])
+  evidence    ResearchEvidence[]
+
+  @@index([canonicalUrl])
+  @@index([contentHash])
+  @@map("research_sources")
+}
+
+model ResearchEvidence {
+  id               String   @id @default(uuid())
+  researchSourceId String
+  extractedText    String
+  classification   String // FACT | SOURCE_CLAIM | ANALYSIS | UNCERTAINTY
+  relatedTaskId    String?
+  createdAt        DateTime @default(now())
+
+  researchSource ResearchSource @relation(fields: [researchSourceId], references: [id])
+
+  @@index([relatedTaskId])
+  @@map("research_evidence")
+}
+
+// Business Intelligence tracked topics (Phase 6, item 8): DATA rows, never
+// hardcoded business logic. Also drives the WebEventSource poller (item 7).
+model ResearchTopic {
+  id                 String    @id @default(uuid())
+  name               String    @unique
+  query              String
+  enabled            Boolean   @default(true)
+  pollIntervalMinutes Int      @default(1440) // default: once/day, never more than once/hour (enforced in code)
+  lastPolledAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@map("research_topics")
+}
+
+// Skill Discovery / Registry (Phase 6, items 11-14) - a FOUNDATION-only
+// lifecycle tracker. A skill can reach ACTIVATABLE for real, but never
+// ACTIVE automatically - see core/skills/registry.ts and
+// docs/PHASE6_WEB_RESEARCH.md for exactly where the line is drawn.
+model SkillCandidate {
+  id                 String   @id @default(uuid())
+  name               String
+  description        String?
+  version            String   @default("0.1.0")
+  source             String // where the candidate came from (URL, "manual", etc.)
+  capabilities       String? // JSON array
+  requiredPermissions String? // JSON array
+  dependencies       String? // JSON array
+  riskLevel          String   @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  testStatus         String   @default("NOT_RUN") // NOT_RUN | NOT_IMPLEMENTED | PASSED | FAILED
+  securityStatus     String   @default("PENDING") // PENDING | PASSED | REJECTED
+  activationStatus   String   @default("DISCOVERED")
+  // DISCOVERED | CANDIDATE | ANALYZING | TESTING | VERIFIED | ACTIVATABLE | ACTIVE | REJECTED | DISABLED | DEPRECATED
+  rejectionReason    String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("skill_candidates")
+}
+
+// ---------------------------------------------------------------------------
 // Observability & security
 // ---------------------------------------------------------------------------
 
