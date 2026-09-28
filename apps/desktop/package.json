@@ -1,0 +1,13 @@
+{
+  "name": "@jarvis/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JARVIS desktop shell (Electron). Loads the web dashboard in a native window.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^32.1.2"
+  }
+}

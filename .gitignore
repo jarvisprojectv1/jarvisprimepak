@@ -9,3 +9,4 @@ database/dev.db-journal
 data/sandbox/*
 !data/sandbox/.gitkeep
 coverage/
+*.tsbuildinfo
