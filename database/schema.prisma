@@ -244,6 +244,12 @@ model Task {
   ownerId     String?
   parentId    String?
   dueAt       DateTime?
+  // Phase 4 (Brain & Memory): when this Task was created from a validated
+  // Plan step (core/brain/plan.ts), these record which step it came from so
+  // the Brain can map Task rows back to plan steps for verification/re-plan.
+  stepId      String? // Plan.steps[].stepId, if this task originated from a Brain plan
+  agentName   String? // Plan.steps[].agent, if the step delegates to an agent
+  toolName    String? // Plan.steps[].tool, if the step calls a tool directly
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -285,19 +291,52 @@ model AgentRun {
 // Memory (see core/memory) - append-only, namespaced
 // ---------------------------------------------------------------------------
 
+// Memory (Phase 4 upgrade): `content` is the primary human-readable field;
+// `value` remains the JSON-encoded structured payload (kept for backward
+// compatibility with Phase 1-3 callers that only ever set `value`). Both are
+// optional at the DB level but at least one is always populated by
+// core/memory. See docs/PHASE4_BRAIN_MEMORY.md for the full design note.
 model Memory {
-  id         String    @id @default(uuid())
-  namespace  String // PERSONAL | BUSINESS | CLIENT | PROJECT | PREFERENCE | KNOWLEDGE | TASK | CONVERSATION | EVENT
-  key        String // logical key a value belongs to, used for conflict/history resolution
-  value      String // JSON-encoded payload
-  importance Int       @default(5) // 1 (low) - 10 (critical)
-  status     String    @default("ACTIVE") // ACTIVE | ARCHIVED
-  supersedes String? // id of the memory entry this one replaces, if any
-  createdAt  DateTime  @default(now())
-  archivedAt DateTime?
+  id            String    @id @default(uuid())
+  namespace     String // PERSONAL | BUSINESS | CLIENT | PROJECT | PREFERENCE | KNOWLEDGE | TASK | CONVERSATION | EVENT | DECISION
+  key           String // logical key a value belongs to, used for conflict/history resolution
+  value         String // JSON-encoded structured payload
+  content       String? // human-readable summary (Phase 4); falls back to `value` when absent
+  source        String? // e.g. "user", "agent:research", "brain", "system"
+  confidence    Float     @default(1) // 0 (low) - 1 (certain)
+  relatedEntity String? // e.g. a lead/company id this memory concerns
+  metadata      String? // JSON-encoded free-form metadata
+  expiresAt     DateTime? // "forget" semantics: excluded from search()/retrieve() once past, never deleted
+  importance    Int       @default(5) // 1 (low) - 10 (critical)
+  status        String    @default("ACTIVE") // ACTIVE | ARCHIVED
+  supersedes    String? // id of the memory entry this one replaces, if any
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  archivedAt    DateTime?
 
   @@index([namespace, key])
   @@map("memory")
+}
+
+// ---------------------------------------------------------------------------
+// AI usage & cost tracking (Phase 4 / Brain & Memory). One row per LLM call,
+// real token counts from the provider's own response - never estimated.
+// estimatedCostUsd is computed from a documented, approximate per-model rate
+// table (core/ai/pricing.ts) - NOT exact billing.
+// ---------------------------------------------------------------------------
+model AiUsage {
+  id               String   @id @default(uuid())
+  provider         String // e.g. "anthropic"
+  model            String
+  inputTokens      Int
+  outputTokens     Int
+  estimatedCostUsd Float
+  taskId           String?
+  agentName        String?
+  createdAt        DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("ai_usage")
 }
 
 // ---------------------------------------------------------------------------
