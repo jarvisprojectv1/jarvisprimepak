@@ -51,7 +51,21 @@ export type AuthzAction =
   | "email.read"
   | "email.send"
   | "approval.read"
-  | "approval.decide";
+  | "approval.decide"
+  // Phase 10 (Browser & Computer Control) - additive only. Coarse
+  // "may this identity request a browser action of this shape at all"
+  // gate; the actual per-action risk/domain/financial decision is made one
+  // layer deeper by core/business/browserPolicy.ts + the browser tool's own
+  // pipeline (tools/browser/browserTool.ts), exactly as email.send's authz
+  // grant does not itself decide whether a specific send is HIGH-risk.
+  | "browser.read"
+  | "browser.navigate"
+  | "browser.click"
+  | "browser.type"
+  | "browser.download"
+  | "browser.upload"
+  | "browser.submit"
+  | "browser.external_side_effect";
 
 export interface AuthzResult {
   allowed: boolean;
@@ -98,6 +112,20 @@ const ROLE_ACTIONS: Record<IdentityKind, Set<AuthzAction> | "ALL"> = {
     "crm.write",
     "email.read",
     "email.send",
+    // Phase 10: AGENT may REQUEST any browser action, exactly as it may
+    // REQUEST an email.send - whether a specific navigation/click/submit is
+    // actually allowed is decided by core/business/browserPolicy.ts's
+    // domain/financial/risk pipeline and, for HIGH-risk or
+    // REQUIRES_APPROVAL-domain actions, the OWNER-only approval queue. This
+    // authz grant is not itself a safety boundary for browser actions.
+    "browser.read",
+    "browser.navigate",
+    "browser.click",
+    "browser.type",
+    "browser.download",
+    "browser.upload",
+    "browser.submit",
+    "browser.external_side_effect",
   ]),
   SERVICE: new Set<AuthzAction>([
     "tool.execute",
@@ -107,6 +135,8 @@ const ROLE_ACTIONS: Record<IdentityKind, Set<AuthzAction> | "ALL"> = {
     "research.write",
     "crm.read",
     "email.read",
+    "browser.read",
+    "browser.navigate",
   ]),
 };
 // Note: "approval.decide" is intentionally granted to no role here except
@@ -148,6 +178,14 @@ const ALL_ACTIONS: AuthzAction[] = [
   "email.send",
   "approval.read",
   "approval.decide",
+  "browser.read",
+  "browser.navigate",
+  "browser.click",
+  "browser.type",
+  "browser.download",
+  "browser.upload",
+  "browser.submit",
+  "browser.external_side_effect",
 ];
 
 /**

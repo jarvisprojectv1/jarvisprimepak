@@ -3,8 +3,8 @@
 // before the orchestrator tries to execute any tool by name.
 import { toolRegistry } from "./registry";
 import { filesTool } from "./files";
-import { browserTool } from "./browser";
-import { computerTool } from "./computer";
+import { browserTool } from "./browser/browserTool";
+import { computerTool } from "./computer/computerTool";
 import { emailTool } from "./email/emailTool";
 import { whatsappTool } from "./whatsapp/whatsappTool";
 import { calendarTool } from "./calendar";

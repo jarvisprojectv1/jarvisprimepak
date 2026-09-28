@@ -35,7 +35,15 @@ const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".git"]);
 // not a capability, so it is excluded from the "no offending identifier
 // anywhere" scan (its own runtime behavior - blocking these actions - is
 // exercised by core/policy/policy.test.ts, untouched by this phase).
-const EXCLUDED_FILES = new Set(["core/policy/index.ts"]);
+// Phase 10: core/business/browserPolicy.ts's FINANCIAL_DOMAIN_KEYWORDS list
+// intentionally NAMES real financial-institution/broker/exchange domains
+// (including "binance") so it can HARD-BLOCK any interactive browser action
+// on them - the exact same "naming it is evidence of protection, not
+// capability" reasoning core/policy/index.ts's BLOCKED_KEYWORDS list already
+// established above. Its own runtime behavior (blocking, never executing)
+// is exercised by core/business/browserPolicy.test.ts, untouched by this
+// exclusion.
+const EXCLUDED_FILES = new Set(["core/policy/index.ts", "core/business/browserPolicy.ts"]);
 
 function walk(dir: string, files: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

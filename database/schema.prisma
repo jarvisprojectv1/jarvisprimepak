@@ -964,3 +964,58 @@ model Setting {
 
   @@map("settings")
 }
+
+// ---------------------------------------------------------------------------
+// Phase 10 (Browser & Computer Control) - additive only.
+// ---------------------------------------------------------------------------
+
+// A single isolated browser session: one Playwright BrowserContext per row
+// (see core/browser/session.ts and tools/browser/playwrightProvider.ts) -
+// never shared across sessions/tasks. Purely metadata here; the live
+// Playwright object itself lives only in the process's in-memory session
+// registry and is disposed on close/expiry, never persisted.
+model BrowserSession {
+  id             String    @id @default(uuid())
+  provider       String // "playwright" | "mock"
+  status         String    @default("ACTIVE") // ACTIVE | CLOSED | EXPIRED
+  profileId      String? // reserved for a future named-profile concept; unused this phase
+  currentUrl     String?
+  currentDomain  String?
+  isolationLevel String    @default("CONTEXT") // "CONTEXT" - a fresh Playwright BrowserContext per session
+  taskId         String?
+  createdBy      String // Identity label ("owner" | "system" | agent name)
+  createdAt      DateTime  @default(now())
+  lastActivityAt DateTime  @default(now())
+  expiresAt      DateTime
+  closedAt       DateTime?
+  closeReason    String?
+
+  @@index([status])
+  @@index([taskId])
+  @@map("browser_sessions")
+}
+
+// One browser-driven action/step, integrated with the existing Task system
+// (Phase 5) via taskId - dispatched by the SAME worker mechanism, no second
+// scheduler (see tools/browser/browserTool.ts's `toolName: "browser"`
+// tagging, reusing Phase 7.1's `{taskId: task.id}` pass-through).
+model BrowserTask {
+  id            String    @id @default(uuid())
+  taskId        String? // FK-by-convention to Task.id (Task has no back-relation array; same loose-FK style as Call.leadId etc.)
+  sessionId     String? // FK-by-convention to BrowserSession.id
+  domain        String?
+  action        String // e.g. "navigate" | "click" | "type" | "submit" | "download" | "upload"
+  targetText    String?
+  riskCategory  String? // READ_ONLY | LOW | MEDIUM | HIGH | BLOCKED - see core/business/browserPolicy.ts
+  status        String    @default("PENDING") // PENDING | APPROVAL_REQUIRED | BLOCKED | IN_PROGRESS | DONE | FAILED
+  approvalId    String?
+  result        String? // JSON-encoded, bounded observation (never raw HTML/full page dump)
+  failureReason String?
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  @@index([taskId])
+  @@index([sessionId])
+  @@index([status])
+  @@map("browser_tasks")
+}

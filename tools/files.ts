@@ -5,7 +5,10 @@ import path from "node:path";
 import type { Tool, ToolResult } from "./registry";
 import { appConfig } from "../config/env";
 
-function resolveSafePath(relativePath: string): string {
+// Exported (Phase 10) so tools/browser/* can reuse this EXACT sandboxing
+// check for upload/download file access instead of re-deriving it - see
+// tools/browser/fsSandbox.ts.
+export function resolveSafePath(relativePath: string): string {
   const sandboxRoot = path.resolve(appConfig.sandboxDir);
   const resolved = path.resolve(sandboxRoot, relativePath);
   if (!resolved.startsWith(sandboxRoot)) {

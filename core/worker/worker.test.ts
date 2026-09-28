@@ -32,7 +32,7 @@ describe("core/worker - the Autonomous Worker loop (#1)", () => {
   afterEach(async () => {
     await setSystemState("RUNNING", "test cleanup", "test");
     await enableTool("reports");
-    await enableTool("browser");
+    await enableTool("computer");
     await setLimitsConfig({ ...DEFAULT_LIMITS });
   });
 
@@ -45,7 +45,11 @@ describe("core/worker - the Autonomous Worker loop (#1)", () => {
   });
 
   it("processClaimedTask marks a task WAITING when its tool is NOT_IMPLEMENTED - never fabricates success", async () => {
-    const task = await prisma.task.create({ data: { title: "browse something", toolName: "browser", status: "IN_PROGRESS" } });
+    // Phase 10: "browser" is now a real tool (Playwright-backed), so it no
+    // longer serves as the NOT_IMPLEMENTED example here - "computer" (no
+    // real desktop/GUI automation exists in this sandbox, see
+    // tools/computer/mockProvider.ts) takes over that role.
+    const task = await prisma.task.create({ data: { title: "control the desktop", toolName: "computer", status: "IN_PROGRESS" } });
     const plannedTask = { ...task, waitingReason: null, blockedReason: null, failureReason: null } as any;
     const outcome = await processClaimedTask(plannedTask, 3);
     expect(outcome.status).toBe("WAITING");
