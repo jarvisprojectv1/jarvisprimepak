@@ -13,12 +13,14 @@
 //
 // Every tool call below goes through toolRegistry.execute() - the SAME
 // guarded path (state -> limits -> policy -> execute -> audit) every other
-// caller uses. This agent never calls fetch()/an AI provider with raw
-// external content - any text extracted from the web is wrapped via
-// core/research/trustBoundary.wrapExternalContent() before it could ever be
-// interpolated into a prompt (this agent does not currently call the AI
-// provider itself - see docs/PHASE6_WEB_RESEARCH.md for where that wrapping
-// point is exercised end-to-end in tests).
+// caller uses. This agent never hands raw external content to an AI
+// provider: after the deterministic classification above, Phase 6.1 adds a
+// real LLM synthesis step (core/research/synthesis.ts) over the evidence
+// just collected - every piece of fetched text reaches that call only
+// wrapped via core/research/trustBoundary.wrapExternalContentBlocks(), the
+// call itself has zero tools, and its structured output is validated by
+// core/research/groundingValidator.ts before anything from it is trusted or
+// written to Memory. See docs/PHASE6_1_RESEARCH_SYNTHESIS.md.
 import type { AgentInterface, AgentRunResult, AgentStatus } from "./types";
 import { prisma } from "../database/client";
 import { log } from "../security/logger";
@@ -27,7 +29,7 @@ import type { SearchResult, FetchedPage } from "../tools/web/types";
 import { canonicalizeUrl } from "../tools/web/sourceResolver";
 import { classifyEvidence, compareAcrossSources, type SourceExcerpt } from "../core/research/evidence";
 import { hashContent, shouldRefetch, isUnchanged } from "../core/research/dedup";
-import { logInjectionSignalsIfAny, wrapExternalContent } from "../core/research/trustBoundary";
+import { logInjectionSignalsIfAny } from "../core/research/trustBoundary";
 import {
   startResearchRun,
   completeResearchRun,
@@ -36,6 +38,10 @@ import {
 } from "../core/research/provenance";
 import { Memory } from "../core/memory";
 import { WORKER_IDENTITY } from "../core/auth/identity";
+import { createDefaultProvider, type AIProvider } from "../core/ai/provider";
+import { getSystemState } from "../core/state";
+import { synthesizeResearch, type SynthesisEvidenceItem } from "../core/research/synthesis";
+import type { ResearchSynthesis } from "../core/research/synthesisTypes";
 
 const MAX_SOURCES = 3;
 
@@ -43,6 +49,12 @@ export class ResearchAgent implements AgentInterface {
   name = "research";
   objective = "Answer research questions using internal knowledge and, when configured, real web research.";
   status: AgentStatus = "IDLE";
+
+  // Phase 6.1: injectable AIProvider, exactly like core/brain.Brain's own
+  // constructor DI pattern - lets tests script a FakeProvider instead of
+  // hitting the real Anthropic API, and lets production code default to the
+  // same real provider the Brain uses.
+  constructor(private aiProvider: AIProvider = createDefaultProvider()) {}
 
   async run(input: Record<string, unknown> = {}): Promise<AgentRunResult> {
     this.status = "RUNNING";
@@ -106,6 +118,7 @@ export class ResearchAgent implements AgentInterface {
 
       const excerpts: SourceExcerpt[] = [];
       const evidenceIds: string[] = [];
+      const synthesisEvidence: SynthesisEvidenceItem[] = [];
       const errors: string[] = [];
       let anyFetchOk = false;
 
@@ -133,17 +146,6 @@ export class ResearchAgent implements AgentInterface {
         // actually protects against injected content, not this scan.
         logInjectionSignalsIfAny(page.text, { url: result.url });
 
-        // Demonstrates the trust-boundary wrapping this agent would hand to
-        // an AI provider for synthesis; not currently sent anywhere (this
-        // agent does deterministic extraction, not LLM synthesis), but any
-        // future call site MUST route external text through this wrapper -
-        // see core/research/trustBoundary.ts.
-        void wrapExternalContent(page.text.slice(0, 2000), {
-          url: result.url,
-          title: page.title,
-          retrievedAt: page.fetchedAt,
-        });
-
         const sourceRow = await recordResearchSource({
           researchRunId: researchRun.id,
           url: result.url,
@@ -165,6 +167,20 @@ export class ResearchAgent implements AgentInterface {
         });
         evidenceIds.push(evidenceRow.id);
         excerpts.push({ sourceId: sourceRow.id, domain: page.domain, text: snippet });
+        // Full record kept for the LLM synthesis step below - this is the
+        // ONLY place fetched external text is handed toward an AI provider,
+        // and it goes through synthesizeResearch()'s trust-boundary wrapping
+        // (core/research/trustBoundary.wrapExternalContentBlocks()), never
+        // raw. See core/research/synthesis.ts.
+        synthesisEvidence.push({
+          evidenceId: evidenceRow.id,
+          sourceId: sourceRow.id,
+          url: result.url,
+          title: page.title,
+          domain: page.domain,
+          retrievedAt: page.fetchedAt,
+          text: snippet,
+        });
       }
 
       if (!anyFetchOk) {
@@ -183,6 +199,99 @@ export class ResearchAgent implements AgentInterface {
         (errors.length > 0 ? ` (${errors.length} source(s) failed to fetch.)` : "");
 
       await completeResearchRun(researchRun.id, errors.length > 0 ? "PARTIAL" : "SUCCESS", summary);
+
+      // Phase 6.1: real LLM synthesis over the evidence just collected, via
+      // a direct AIProvider.complete() call (see core/research/synthesis.ts
+      // for the full design rationale, trust-boundary structure, and
+      // no-tools guarantee). This is additive on top of the deterministic
+      // classification/comparison above, which remains the agent's baseline,
+      // always-available behavior - synthesis enriches the result when an
+      // AI provider is configured and the cost budget allows it, and
+      // degrades honestly (never fabricating a result) otherwise.
+      let synthesis: ResearchSynthesis | undefined;
+      let synthesisStatus: AgentStatus | undefined;
+      let synthesisNote: string | undefined;
+
+      // Mid-execution halt: the enforcement gate only checks system state
+      // ONCE, before this agent's run() body starts (see
+      // core/enforcement.guardAgentExecution) - a pause/emergency-stop that
+      // happens WHILE search/fetch were already in flight would otherwise
+      // let the (separately-gated) LLM synthesis call still go out. Brain
+      // re-checks state before each step for the identical reason
+      // (core/brain/index.ts's mid-plan halting) - this mirrors that here,
+      // immediately before the one LLM call this agent makes.
+      const stateBeforeSynthesis = await getSystemState();
+      if (stateBeforeSynthesis.state === "PAUSED" || stateBeforeSynthesis.state === "EMERGENCY_STOP") {
+        synthesisStatus = "WAITING";
+        synthesisNote = `AI synthesis skipped: system is ${stateBeforeSynthesis.state}.`;
+        log("SECURITY", "research-agent.synthesis_halted", { state: stateBeforeSynthesis.state });
+        return this.finish(agentRow.id, run.id, {
+          status: synthesisStatus,
+          summary: `${summary} ${synthesisNote}`,
+          data: { researchRunId: researchRun.id, sourceCount: excerpts.length, comparison },
+          result: { researchRunId: researchRun.id, sourceCount: excerpts.length, comparison },
+          evidence: { researchRunId: researchRun.id, evidenceIds, sourceCount: excerpts.length },
+          errors: errors.length > 0 ? errors : undefined,
+          nextAction: synthesisNote,
+        });
+      }
+
+      const synthesisOutcome = await synthesizeResearch({
+        aiProvider: this.aiProvider,
+        topic,
+        evidenceItems: synthesisEvidence,
+        taskId,
+      });
+
+      if (synthesisOutcome.ok) {
+        synthesis = synthesisOutcome.synthesis;
+        // Only write to Memory AFTER the grounding validator (inside
+        // synthesizeResearch) has confirmed each finding is properly
+        // supported - never before. One Memory entry per grounded finding,
+        // with real provenance: source = the finding's own cited sources,
+        // confidence = the synthesis's real (not fabricated 1.0) confidence,
+        // relatedEntity = the finding's primary evidence id.
+        for (const finding of synthesis.findings) {
+          await Memory.remember({
+            namespace: "KNOWLEDGE",
+            key: `research-synthesis:${topic}`,
+            content: finding.statement,
+            value: { topic, classification: finding.classification, findingId: finding.id },
+            source: finding.sourceIds.join(",") || "ai-synthesis",
+            confidence: synthesis.confidence,
+            relatedEntity: finding.evidenceIds[0],
+            metadata: { researchRunId: researchRun.id, evidenceIds: finding.evidenceIds, sourceIds: finding.sourceIds },
+          });
+        }
+        log("AGENT", "research-agent.synthesis_success", {
+          researchRunId: researchRun.id,
+          findingCount: synthesis.findings.length,
+          rejectedCount: synthesisOutcome.rejectedFindings.length,
+        });
+      } else if (synthesisOutcome.code === "CONFIGURATION_REQUIRED") {
+        // No AI provider configured at all: an honest, expected gap - the
+        // deterministic result above stands unchanged, exactly as before
+        // this phase. Not surfaced as an error (it isn't one).
+        log("INFO", "research-agent.synthesis_not_configured", { message: synthesisOutcome.message });
+      } else if (synthesisOutcome.code === "COST_LIMIT_EXCEEDED") {
+        // checkCostLimit() already raised its own notification and (if a
+        // taskId exists) moved that task to WAITING - here we additionally
+        // make the agent's OWN return value honest about it, matching the
+        // Brain's own cost-exhausted behavior.
+        synthesisStatus = "WAITING";
+        synthesisNote = `AI synthesis skipped: ${synthesisOutcome.message}`;
+      } else {
+        // PROVIDER_ERROR / PARSE_ERROR / NO_VALID_FINDINGS: the deterministic
+        // evidence already collected is real and stands on its own; the
+        // synthesis attempt's failure is surfaced honestly as an error
+        // rather than silently dropped or used to fabricate a result.
+        const detail =
+          synthesisOutcome.code === "PARSE_ERROR"
+            ? synthesisOutcome.errors.join("; ")
+            : synthesisOutcome.message;
+        errors.push(`AI synthesis (${synthesisOutcome.code}): ${detail}`);
+        log("WARNING", "research-agent.synthesis_failed", { code: synthesisOutcome.code, detail });
+      }
 
       // Remember: one Memory entry per evidence item, each with real
       // provenance (source = URL, confidence reflects real uncertainty,
@@ -204,13 +313,15 @@ export class ResearchAgent implements AgentInterface {
         });
       }
 
+      const finalSummary = synthesisNote ? `${summary} ${synthesisNote}` : summary;
       return this.finish(agentRow.id, run.id, {
-        status: "SUCCESS",
-        summary,
-        data: { researchRunId: researchRun.id, sourceCount: excerpts.length, comparison },
-        result: { researchRunId: researchRun.id, sourceCount: excerpts.length, comparison },
+        status: synthesisStatus ?? "SUCCESS",
+        summary: finalSummary,
+        data: { researchRunId: researchRun.id, sourceCount: excerpts.length, comparison, synthesis },
+        result: { researchRunId: researchRun.id, sourceCount: excerpts.length, comparison, synthesis },
         evidence: { researchRunId: researchRun.id, evidenceIds, sourceCount: excerpts.length },
         errors: errors.length > 0 ? errors : undefined,
+        nextAction: synthesisNote,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
