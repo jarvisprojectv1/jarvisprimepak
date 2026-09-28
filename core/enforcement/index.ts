@@ -10,7 +10,6 @@
 //
 // Every outcome (allowed or blocked) is written to the audit log
 // (security/audit.ts -> writeAuditLog, which redacts before persisting).
-import { prisma } from "../../database/client";
 import { log } from "../../security/logger";
 import { writeAuditLog } from "../../security/audit";
 import { classify } from "../decision_engine";
@@ -22,6 +21,8 @@ import {
   acquireAgentSlot,
   releaseAgentSlot,
 } from "../limits";
+import { notificationService } from "../notifications";
+import { SYSTEM_IDENTITY, identityToActorString, type Identity } from "../auth/identity";
 import type { ToolResult } from "../../tools/registry";
 import type { AgentRunResult } from "../../agents/types";
 
@@ -42,7 +43,11 @@ export interface GateResult {
 
 async function createNotification(title: string, body: string): Promise<void> {
   try {
-    await prisma.notification.create({ data: { title, body } });
+    // Real Notification Service (core/notifications) - repository -> service
+    // -> dispatcher, replacing the old ad-hoc direct prisma.notification.create()
+    // call. NOTIFY-level policy outcomes are surfaced as ACTION_REQUIRED so
+    // an operator knows a human look may be warranted.
+    await notificationService.create({ title, body, type: "ACTION_REQUIRED" });
   } catch (err) {
     log("WARNING", "enforcement.notification_write_failed", {
       error: err instanceof Error ? err.message : String(err),
@@ -145,13 +150,18 @@ export async function evaluateGate(ctx: GateContext): Promise<GateResult> {
 export function guardToolExecution(
   toolName: string,
   original: (input: Record<string, unknown>) => Promise<ToolResult>
-): (input: Record<string, unknown>) => Promise<ToolResult> {
-  return async (input: Record<string, unknown> = {}): Promise<ToolResult> => {
+): (input: Record<string, unknown>, identity?: Identity) => Promise<ToolResult> {
+  return async (input: Record<string, unknown> = {}, identity?: Identity): Promise<ToolResult> => {
+    // The audit actor is ALWAYS derived from a validated Identity object,
+    // never from a client-supplied string - see core/auth. Callers that
+    // don't (or can't) supply one (e.g. the scheduler) are attributed to the
+    // fixed, non-human SYSTEM_IDENTITY, never an arbitrary string.
+    const actor = identityToActorString(identity ?? SYSTEM_IDENTITY);
     const gate = await evaluateGate({ kind: "tool", name: toolName, input });
 
     if (!gate.allowed) {
       await writeAuditLog({
-        actor: "system",
+        actor,
         action: `tool.blocked:${toolName}`,
         target: toolName,
         meta: {
@@ -176,7 +186,7 @@ export function guardToolExecution(
     try {
       const result = await original(input);
       await writeAuditLog({
-        actor: "system",
+        actor,
         action: `tool.execute:${toolName}`,
         target: toolName,
         meta: {
@@ -190,7 +200,7 @@ export function guardToolExecution(
       return result;
     } catch (err) {
       await writeAuditLog({
-        actor: "system",
+        actor,
         action: `tool.execute:${toolName}`,
         target: toolName,
         meta: {
@@ -210,13 +220,14 @@ export function guardToolExecution(
 export function guardAgentExecution(
   agentName: string,
   original: (input?: Record<string, unknown>) => Promise<AgentRunResult>
-): (input?: Record<string, unknown>) => Promise<AgentRunResult> {
-  return async (input?: Record<string, unknown>): Promise<AgentRunResult> => {
+): (input?: Record<string, unknown>, identity?: Identity) => Promise<AgentRunResult> {
+  return async (input?: Record<string, unknown>, identity?: Identity): Promise<AgentRunResult> => {
+    const actor = identityToActorString(identity ?? SYSTEM_IDENTITY);
     const gate = await evaluateGate({ kind: "agent", name: agentName, input });
 
     if (!gate.allowed) {
       await writeAuditLog({
-        actor: "system",
+        actor,
         action: `agent.blocked:${agentName}`,
         target: agentName,
         meta: {
@@ -238,7 +249,7 @@ export function guardAgentExecution(
     try {
       const result = await original(input);
       await writeAuditLog({
-        actor: "system",
+        actor,
         action: `agent.run:${agentName}`,
         target: agentName,
         meta: {
@@ -252,7 +263,7 @@ export function guardAgentExecution(
       return result;
     } catch (err) {
       await writeAuditLog({
-        actor: "system",
+        actor,
         action: `agent.run:${agentName}`,
         target: agentName,
         meta: {
