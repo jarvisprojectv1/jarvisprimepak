@@ -753,3 +753,66 @@ the full writeup. A hardening/completion pass over Phase 7 only.
   show ZERO diff. The only enforcement-adjacent file touched is
   `core/worker/index.ts` (not in that list), a 7-line additive change
   documented above.
+
+PHASE 11 UPDATE (ADVANCED BUSINESS INTELLIGENCE & DECISION SUPPORT) — see
+docs/PHASE11_BUSINESS_INTELLIGENCE.md for the full writeup; summary below.
+(Note: this status log was not appended to for Phases 8/9/10/10.1 - see
+docs/PHASE8_WHATSAPP.md, docs/PHASE9_VOICE.md and the Phase 10/10.1 commit
+messages for that work; this entry picks the log back up.)
+
+NEWLY IMPLEMENTED
+- core/business/intelligence/: a new, additive-only directory - the
+  FACT/OBSERVATION/CALCULATION/FORECAST/INFERENCE/RECOMMENDATION/UNKNOWN
+  taxonomy (types.ts), Prime Pak's own company profile as data
+  (companyProfile.ts, with a mechanically-tested guard against the
+  disallowed "Prime Pak itself has 25+ years" claim), Asia/Karachi time
+  windows (timeWindows.ts), sales-funnel/pipeline-health/lead-scoring
+  (salesFunnel.ts), customer timeline/communication stats
+  (customerIntelligence.ts), follow-up candidate detection that reuses
+  core/business/followUp.ts's reply-check discipline
+  (followUpIntelligence.ts), product/quote metrics honestly returning
+  UNKNOWN where no structured link exists (productIntelligence.ts), a data
+  quality engine reusing core/crm/dedup.ts's existing flags
+  (dataQuality.ts), deterministic threshold-based anomaly detection
+  (anomalyDetection.ts), a minimal honest moving-average forecast with
+  explicit confidence labeling (forecasting.ts), a structured, non-executing
+  recommendation engine (recommendations.ts), a sibling grounding validator
+  (biGroundingValidator.ts) and AI narrative synthesis that reuses
+  core/ai/costControl.ts + core/research/trustBoundary.ts's exact patterns
+  (synthesis.ts), an immutable/idempotent BusinessSnapshot assembly
+  (snapshot.ts), deterministic-first executive briefing assembly
+  (executiveBriefing.ts), and a FACT-vs-assumption memory-writing
+  distinction (memoryIntegration.ts).
+- tools/businessIntelligence.ts: a new, read-only Brain-callable tool,
+  registered through the normal toolRegistry - no send/call/browser code
+  path anywhere in it (verified by agents/phase11-bi-safety.test.ts).
+- database/schema.prisma: one additive migration
+  (20260928183754_phase11_business_intelligence) adding the
+  BusinessSnapshot model only - no existing table changed.
+- core/reports/dailyReport.ts: gained one new `businessIntelligence` section
+  (extends the existing report generator, never a second one).
+- scheduler/index.ts + core/conditions/rules.ts: a new "weekly-review" job
+  (Monday 06:00 Asia/Karachi) registered via the exact same pattern as
+  morning-briefing/daily-report - those two jobs' own schedules were not
+  touched.
+- apps/api/src/index.ts / tools/index.ts: wired the new tool registration
+  and company-profile seed into boot, same pattern as every existing
+  tool/seed.
+- agents/phase11-bi-safety.test.ts: the phase's own required architectural
+  verification - (E) exactly 3 real provider.sendMessage()/createCall() call
+  sites repo-wide, unchanged from the Phase 9/10 baseline; (F) no
+  financial/trading-execution-shaped identifier in any Phase 11 file; (G) no
+  Phase 11 file calls a browser action outside the normal
+  toolRegistry.execute("browser", ...) path.
+- 63 new tests (698/698 total, up from 635/635). Root and apps/api
+  typechecks both clean. `git diff --stat` against commit 7d10426 for
+  core/enforcement/, core/state/, core/limits/, core/ai/costControl.ts,
+  core/worker/claim.ts, core/decision_engine/, core/policy/, core/auth/, and
+  core/authz/ all show ZERO diff.
+
+DEFERRED (honestly, not silently) — see docs/PHASE11_BUSINESS_INTELLIGENCE.md
+- Market/Competitor Intelligence (browser-based research), Revenue/
+  Margin/Production Intelligence (no honest data source exists yet for
+  these), a dedicated Business-Assumptions/Experiment tracking entity, a
+  Knowledge Graph, and a Dashboard UI were all deferred as lower priority
+  per this phase's own triage instruction.
