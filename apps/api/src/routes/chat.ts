@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { orchestrator } from "../../../../core/orchestrator";
+import { requireAuth, requireAuthz } from "../middleware/auth";
 
 export const chatRouter = Router();
 
-chatRouter.post("/", async (req, res) => {
+// /chat requires authentication, restricted to OWNER (chat.use is not
+// granted to SYSTEM/AGENT/SERVICE in core/authz) - the safer default for a
+// personal system like this, per docs/PHASE3_IDENTITY_EVENTS.md.
+chatRouter.post("/", requireAuth, requireAuthz("chat.use"), async (req, res) => {
   const { message, toolCall, conversationId } = req.body ?? {};
 
   if (!message || typeof message !== "string") {

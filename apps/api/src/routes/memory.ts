@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { Memory, MEMORY_NAMESPACES } from "../../../../core/memory";
+import { requireAuth, requireAuthz } from "../middleware/auth";
 
 export const memoryRouter = Router();
 
-memoryRouter.get("/", async (req, res) => {
+memoryRouter.get("/", requireAuth, requireAuthz("memory.read"), async (req, res) => {
   const { namespace, query, limit } = req.query;
   const results = await Memory.search({
     namespace: typeof namespace === "string" ? (namespace as any) : undefined,
@@ -13,7 +14,7 @@ memoryRouter.get("/", async (req, res) => {
   res.json(results);
 });
 
-memoryRouter.post("/", async (req, res) => {
+memoryRouter.post("/", requireAuth, requireAuthz("memory.write"), async (req, res) => {
   const { namespace, key, value, importance } = req.body ?? {};
   if (!namespace || !MEMORY_NAMESPACES.includes(namespace)) {
     res.status(400).json({ error: `'namespace' must be one of: ${MEMORY_NAMESPACES.join(", ")}` });
@@ -27,7 +28,7 @@ memoryRouter.post("/", async (req, res) => {
   res.status(201).json(entry);
 });
 
-memoryRouter.get("/:namespace/:key/history", async (req, res) => {
+memoryRouter.get("/:namespace/:key/history", requireAuth, requireAuthz("memory.read"), async (req, res) => {
   const { namespace, key } = req.params;
   if (!MEMORY_NAMESPACES.includes(namespace as any)) {
     res.status(400).json({ error: `'namespace' must be one of: ${MEMORY_NAMESPACES.join(", ")}` });

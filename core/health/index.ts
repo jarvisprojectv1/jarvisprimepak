@@ -1,0 +1,198 @@
+// core/health - System Health checks (Phase 3 / Identity & Events).
+//
+// Each check returns HEALTHY | DEGRADED | FAILED | UNKNOWN with a short,
+// non-sensitive reason - never a stack trace, file path beyond what's
+// already non-sensitive, or env value. GET /system/health aggregates all
+// checks (see apps/api/src/routes/system.ts): FAILED if any check FAILED,
+// else DEGRADED if any DEGRADED, else HEALTHY.
+import os from "node:os";
+import fs from "node:fs/promises";
+import { prisma } from "../../database/client";
+import { scheduler } from "../../scheduler";
+import { toolRegistry } from "../../tools/registry";
+import { listAgents } from "../../agents/registry";
+import { Memory } from "../memory";
+import { publish, subscribe } from "../events";
+import { appConfig } from "../../config/env";
+
+export type HealthStatus = "HEALTHY" | "DEGRADED" | "FAILED" | "UNKNOWN";
+
+export interface ComponentHealth {
+  status: HealthStatus;
+  reason: string;
+}
+
+export interface SystemHealthReport {
+  status: HealthStatus;
+  components: Record<string, ComponentHealth>;
+  checkedAt: string;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
+}
+
+async function checkApi(): Promise<ComponentHealth> {
+  // Trivially "self" - if this code is running, the API process is up.
+  return { status: "HEALTHY", reason: "API process is running." };
+}
+
+async function checkDatabase(): Promise<ComponentHealth> {
+  try {
+    await withTimeout(prisma.$queryRawUnsafe("SELECT 1"), 2000);
+    return { status: "HEALTHY", reason: "Database responded to SELECT 1." };
+  } catch (err) {
+    return { status: "FAILED", reason: "Database did not respond in time." };
+  }
+}
+
+async function checkScheduler(): Promise<ComponentHealth> {
+  const expectedJobs = ["daily-heartbeat", "hourly-stale-lead-check", "morning-briefing"];
+  const running = expectedJobs.filter((name) => scheduler.isRunning(name));
+  if (running.length === expectedJobs.length) {
+    return { status: "HEALTHY", reason: `All ${expectedJobs.length} expected cron jobs are running.` };
+  }
+  if (running.length === 0) {
+    return { status: "FAILED", reason: "No expected cron jobs are running." };
+  }
+  return { status: "DEGRADED", reason: `${running.length}/${expectedJobs.length} expected cron jobs are running.` };
+}
+
+async function checkEventBus(): Promise<ComponentHealth> {
+  try {
+    let received = false;
+    const unsubscribe = subscribe("SYSTEM.health_check", () => {
+      received = true;
+    });
+    await publish({ type: "SYSTEM.health_check", payload: {}, source: "health" });
+    unsubscribe();
+    return received
+      ? { status: "HEALTHY", reason: "Publish + subscribe round-trip succeeded." }
+      : { status: "DEGRADED", reason: "Event published but handler did not run synchronously." };
+  } catch {
+    return { status: "FAILED", reason: "Event bus publish failed." };
+  }
+}
+
+async function checkTaskQueue(): Promise<ComponentHealth> {
+  try {
+    const total = await prisma.task.count({ where: { status: { in: ["IN_PROGRESS", "RETRYING"] } } });
+    if (total > 100) return { status: "DEGRADED", reason: `${total} tasks are IN_PROGRESS/RETRYING - unusually high.` };
+    return { status: "HEALTHY", reason: `${total} tasks currently IN_PROGRESS/RETRYING.` };
+  } catch {
+    return { status: "UNKNOWN", reason: "Could not query the task queue." };
+  }
+}
+
+async function checkAgents(): Promise<ComponentHealth> {
+  try {
+    // "Stuck" agents: rows in agent_runs still RUNNING with no endedAt for
+    // an unreasonable time (30 minutes). A real deadline-tracking mechanism
+    // per agent run is future work.
+    const staleThreshold = new Date(Date.now() - 30 * 60 * 1000);
+    const stuck = await prisma.agentRun.count({
+      where: { status: "RUNNING", startedAt: { lt: staleThreshold } },
+    });
+    if (stuck > 0) {
+      return { status: "DEGRADED", reason: `${stuck} agent run(s) have been RUNNING for over 30 minutes.` };
+    }
+    return { status: "HEALTHY", reason: `${listAgents().length} agent(s) registered, none stuck.` };
+  } catch {
+    return { status: "UNKNOWN", reason: "Could not query agent runs." };
+  }
+}
+
+async function checkToolRegistry(): Promise<ComponentHealth> {
+  const count = toolRegistry.list().length;
+  if (count === 0) return { status: "FAILED", reason: "No tools are registered." };
+  return { status: "HEALTHY", reason: `${count} tool(s) registered.` };
+}
+
+async function checkMemory(): Promise<ComponentHealth> {
+  try {
+    await withTimeout(Memory.search({ limit: 1 }), 2000);
+    return { status: "HEALTHY", reason: "Memory search round-trip succeeded." };
+  } catch {
+    return { status: "FAILED", reason: "Memory search did not respond in time." };
+  }
+}
+
+async function checkDisk(): Promise<ComponentHealth> {
+  try {
+    // fs.statfs is available on Node 18.15+/20+; if it throws (unsupported
+    // platform/sandbox), we honestly report UNKNOWN rather than a fabricated
+    // number.
+    const stats = await (fs as any).statfs?.(appConfig.sandboxDir);
+    if (!stats) return { status: "UNKNOWN", reason: "Disk usage is not available on this platform." };
+    const freeBytes = stats.bfree * stats.bsize;
+    const totalBytes = stats.blocks * stats.bsize;
+    const freeRatio = totalBytes > 0 ? freeBytes / totalBytes : 1;
+    if (freeRatio < 0.05) return { status: "DEGRADED", reason: `Only ${(freeRatio * 100).toFixed(1)}% disk free.` };
+    return { status: "HEALTHY", reason: `${(freeRatio * 100).toFixed(1)}% disk free.` };
+  } catch {
+    return { status: "UNKNOWN", reason: "Could not read disk usage in this environment." };
+  }
+}
+
+async function checkResources(): Promise<ComponentHealth> {
+  const load = os.loadavg()[0];
+  const cpuCount = os.cpus().length || 1;
+  const mem = process.memoryUsage();
+  const loadRatio = load / cpuCount;
+  if (loadRatio > 4) {
+    return {
+      status: "DEGRADED",
+      reason: `1-min load average ${load.toFixed(2)} across ${cpuCount} CPU(s); heapUsed ${Math.round(mem.heapUsed / 1e6)}MB.`,
+    };
+  }
+  return {
+    status: "HEALTHY",
+    reason: `1-min load average ${load.toFixed(2)} across ${cpuCount} CPU(s); heapUsed ${Math.round(mem.heapUsed / 1e6)}MB.`,
+  };
+}
+
+function aggregate(components: Record<string, ComponentHealth>): HealthStatus {
+  const statuses = Object.values(components).map((c) => c.status);
+  if (statuses.includes("FAILED")) return "FAILED";
+  if (statuses.includes("DEGRADED")) return "DEGRADED";
+  if (statuses.every((s) => s === "UNKNOWN")) return "UNKNOWN";
+  return "HEALTHY";
+}
+
+export async function getSystemHealth(): Promise<SystemHealthReport> {
+  const [api, database, schedulerHealth, eventBus, taskQueue, agents, tools, memory, disk, resources] =
+    await Promise.all([
+      checkApi(),
+      checkDatabase(),
+      checkScheduler(),
+      checkEventBus(),
+      checkTaskQueue(),
+      checkAgents(),
+      checkToolRegistry(),
+      checkMemory(),
+      checkDisk(),
+      checkResources(),
+    ]);
+
+  const components: Record<string, ComponentHealth> = {
+    api,
+    database,
+    scheduler: schedulerHealth,
+    eventBus,
+    taskQueue,
+    agents,
+    toolRegistry: tools,
+    memory,
+    disk,
+    resources,
+  };
+
+  return {
+    status: aggregate(components),
+    components,
+    checkedAt: new Date().toISOString(),
+  };
+}

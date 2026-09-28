@@ -9,12 +9,21 @@ import { registerExampleJobs } from "../../../scheduler";
 import { log } from "../../../security/logger";
 import { recoverUnfinishedTasks } from "../../../core/tasks";
 import { registerDefaultSubscribers } from "../../../core/events";
+import { seedExampleConditionRules } from "../../../core/conditions/rules";
 
 async function main() {
   applyPendingMigrations();
   registerBuiltinTools();
   registerBuiltinAgents();
   registerDefaultSubscribers();
+
+  try {
+    await seedExampleConditionRules();
+  } catch (err) {
+    log("WARNING", "boot.condition_rule_seed_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   try {
     const recovery = await recoverUnfinishedTasks();
