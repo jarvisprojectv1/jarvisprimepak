@@ -957,6 +957,47 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+// Phase 11 (Business Intelligence, section 8): an immutable, one-per-period
+// snapshot of deterministically-computed KPIs. Additive-only table - no
+// existing model changes. "Immutable once generated" means CODE never calls
+// .update()/.delete() on this model (enforced by convention + tests, same
+// discipline as ResearchEvidence/AuditLog); a mis-generated snapshot is
+// superseded by creating a NEW row for the same period (never edited in
+// place), matching core/memory's append-only/supersede discipline.
+// periodKey + snapshotType is the deterministic idempotency key (DB-unique)
+// so a worker retry regenerating the same period's snapshot cannot create a
+// duplicate row - see core/business/idempotency.ts's discipline, reused here
+// as a design pattern (this table uses its own unique constraint rather than
+// OutboundSendLog, since a snapshot is not an outbound send).
+model BusinessSnapshot {
+  id            String   @id @default(uuid())
+  // Deterministic key: `${snapshotType}:${periodStart-ISO}:${periodEnd-ISO}`.
+  // Unique together with snapshotType below (belt-and-suspenders: the
+  // periodKey alone already encodes the type, but keeping both indexed
+  // columns makes querying by type alone fast and the constraint legible).
+  periodKey     String
+  // "DAILY" | "WEEKLY" | "MONTHLY" | "CUSTOM" - which reporting cadence this
+  // snapshot covers (section 9's time windows, resolved to concrete bounds
+  // at generation time - see core/business/intelligence/timeWindows.ts).
+  snapshotType  String
+  periodStart   DateTime
+  periodEnd     DateTime
+  generatedAt   DateTime @default(now())
+  // JSON-encoded Record<string, IntelligenceStatement> (see
+  // core/business/intelligence/types.ts) - every metric tagged with its
+  // FACT/OBSERVATION/CALCULATION/FORECAST/INFERENCE/RECOMMENDATION/UNKNOWN
+  // classification, never a bare number.
+  metricsJson   String
+  // JSON-encoded provenance: source record ids, date range, calculation
+  // method per metric (section 5-7) - never just a number with no lineage.
+  provenanceJson String
+  createdAt     DateTime @default(now())
+
+  @@unique([periodKey, snapshotType])
+  @@index([snapshotType, periodStart])
+  @@map("business_snapshots")
+}
+
 model Setting {
   key       String   @id
   value     String // JSON-encoded
