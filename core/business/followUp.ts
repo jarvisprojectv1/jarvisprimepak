@@ -52,8 +52,8 @@ export async function isFollowUpAllowed(input: {
   sinceTaskCreatedAt: Date;
   /** Phase 7.1: the lead this follow-up concerns, if any - checked for WON/LOST/NURTURE closure. */
   leadId?: string | null;
-  /** Phase 8 (item 20): "EMAIL" | "WHATSAPP" - which suppression/pending-approval target to check. Defaults to "EMAIL" (Phase 7 behavior unchanged). */
-  channel?: "EMAIL" | "WHATSAPP";
+  /** Phase 8/9 (items 20, 26): "EMAIL" | "WHATSAPP" | "VOICE" - which suppression/pending-approval target to check. Defaults to "EMAIL" (Phase 7 behavior unchanged). VOICE reuses the SAME phone-keyed branch WHATSAPP does (see antiSpam.ts's shared normalizedPhone suppression) - not a third, forked branch. */
+  channel?: "EMAIL" | "WHATSAPP" | "VOICE";
 }): Promise<FollowUpCheckResult> {
   const state = await getSystemState();
   if (state.state === "EMERGENCY_STOP") return { allowed: false, reason: "System is in EMERGENCY_STOP." };
@@ -76,12 +76,13 @@ export async function isFollowUpAllowed(input: {
   }
 
   const channel = input.channel ?? "EMAIL";
+  const isPhoneChannel = channel === "WHATSAPP" || channel === "VOICE";
   let contactTarget: string | null | undefined;
   if (input.contactId) {
     const contact = await prisma.contact.findUnique({ where: { id: input.contactId } });
-    contactTarget = channel === "WHATSAPP" ? contact?.normalizedPhone ?? contact?.phone : contact?.email;
+    contactTarget = isPhoneChannel ? contact?.normalizedPhone ?? contact?.phone : contact?.email;
 
-    const suppressed = channel === "WHATSAPP" ? await isWhatsAppSuppressed(contactTarget) : await isSuppressed(contactTarget);
+    const suppressed = isPhoneChannel ? await isWhatsAppSuppressed(contactTarget) : await isSuppressed(contactTarget);
     if (suppressed) return { allowed: false, reason: "Contact is suppressed (unsubscribed/bounced)." };
 
     // Belt-and-suspenders: Contact.unsubscribed can in principle be true
@@ -134,8 +135,8 @@ export interface ScheduleFollowUpInput {
   subject: string;
   body: string;
   scheduledFor: Date;
-  /** Phase 8 (item 20): "EMAIL" | "WHATSAPP" - which tool the dispatch pass tags the Task with. Defaults to "EMAIL" (Phase 7 behavior unchanged). */
-  channel?: "EMAIL" | "WHATSAPP";
+  /** Phase 8/9 (item 20): "EMAIL" | "WHATSAPP" | "VOICE" - which tool the dispatch pass tags the Task with. Defaults to "EMAIL" (Phase 7 behavior unchanged). */
+  channel?: "EMAIL" | "WHATSAPP" | "VOICE";
 }
 
 export interface FollowUpRecord {
@@ -218,7 +219,7 @@ export async function scheduleDueFollowUps(now: Date = new Date()): Promise<{ di
     // the only difference is which tool the Task is tagged with, exactly
     // like the worker already dispatches any toolName-tagged task
     // (core/worker/index.ts's processClaimedTask required no change here).
-    const toolName = followUp.channel === "WHATSAPP" ? "whatsapp" : "email";
+    const toolName = followUp.channel === "WHATSAPP" ? "whatsapp" : followUp.channel === "VOICE" ? "voice" : "email";
     const task = await planTask({
       title: `Follow-up (step ${followUp.sequenceStep})`,
       description: `Automated follow-up for FollowUp ${followUp.id}.`,

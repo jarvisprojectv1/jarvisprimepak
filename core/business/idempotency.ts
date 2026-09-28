@@ -28,7 +28,7 @@ export function computeIdempotencyKey(parts: { taskId?: string | null; contactEm
  * mechanism below - not a second, divergent idempotency system.
  */
 export function computeChannelIdempotencyKey(parts: {
-  channel?: "EMAIL" | "WHATSAPP";
+  channel?: "EMAIL" | "WHATSAPP" | "VOICE";
   taskId?: string | null;
   recipient?: string | null;
   subject?: string;
@@ -72,7 +72,7 @@ export async function reserveIdempotencyKey(input: {
   idempotencyKey: string;
   taskId?: string | null;
   contactId?: string | null;
-  channel?: "EMAIL" | "WHATSAPP";
+  channel?: "EMAIL" | "WHATSAPP" | "VOICE";
 }): Promise<ReservationResult> {
   try {
     await prisma.outboundSendLog.create({
@@ -115,7 +115,7 @@ export async function recordSendAttempt(input: {
   emailId?: string | null;
   status: "SENT" | "FAILED" | "BLOCKED";
   providerMessageId?: string | null;
-  channel?: "EMAIL" | "WHATSAPP";
+  channel?: "EMAIL" | "WHATSAPP" | "VOICE";
 }) {
   const existing = await prisma.outboundSendLog.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing && existing.status === "SENT") return existing; // never re-write a confirmed send

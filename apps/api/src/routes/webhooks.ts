@@ -26,6 +26,7 @@
 //     WHATSAPP_WEBHOOK_VERIFY_TOKEN values.
 import { Router, type Request } from "express";
 import { verifyWebhookSignature, normalizeInboundWebhookPayload } from "../../../../core/whatsapp/webhook";
+import { verifyTwilioSignature, normalizeInboundVoiceWebhook } from "../../../../core/voice/webhook";
 import { publish } from "../../../../core/events";
 import { log } from "../../../../security/logger";
 
@@ -92,4 +93,79 @@ webhooksRouter.post("/whatsapp", async (req: Request & { rawBody?: Buffer }, res
   }
 
   res.status(200).json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 (Voice, item 5): the Twilio Programmable Voice webhook. Deliberately
+// UNAUTHENTICATED by session (Twilio's server, not a logged-in user) -
+// authenticated instead by X-Twilio-Signature verification
+// (core/voice/webhook.ts's verifyTwilioSignature()), mirroring the WhatsApp
+// route above exactly:
+//   - Rejects a missing/invalid signature outright (401) BEFORE touching the
+//     payload at all; 503 if TWILIO_AUTH_TOKEN is unconfigured (fail closed).
+//   - `fullUrl` MUST be the exact, externally-visible URL Twilio was
+//     configured to POST to - VOICE_PUBLIC_WEBHOOK_URL is the one
+//     authoritative source (a proxy-rewritten req.originalUrl/req.protocol
+//     is NOT trusted for this, since a misconfigured/spoofed Host header
+//     could otherwise make an invalid signature verify). With no configured
+//     public URL, verification fails closed (401), never falls back to a
+//     guess.
+//   - Deduplicates by provider call id: Call.providerCallId's DB unique
+//     constraint (core/voice/ingest.ts's upsert) - this route does not need
+//     its own dedup layer.
+//   - Never processes the payload synchronously inline: publishes one
+//     "VOICE.call_event" event via core/events and returns TwiML - the real
+//     work happens in core/voice/subscriber.ts.
+//   - NEVER logs the raw signature header or TWILIO_AUTH_TOKEN.
+webhooksRouter.post("/voice", async (req: Request & { rawBody?: Buffer }, res) => {
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const publicBaseUrl = process.env.VOICE_PUBLIC_WEBHOOK_URL;
+  if (!authToken || !publicBaseUrl) {
+    res.status(503).json({ error: "Webhook not configured." });
+    return;
+  }
+
+  const signature = req.header("X-Twilio-Signature");
+  const params = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+  const stringParams: Record<string, string> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (typeof v === "string") stringParams[k] = v;
+  }
+  const fullUrl = `${publicBaseUrl.replace(/\/$/, "")}/webhooks/voice`;
+
+  if (!verifyTwilioSignature(fullUrl, stringParams, signature, authToken)) {
+    log("SECURITY", "voice.webhook_signature_rejected", {});
+    res.status(401).json({ error: "Invalid signature." });
+    return;
+  }
+
+  const normalized = normalizeInboundVoiceWebhook(params);
+  if (!normalized) {
+    log("WARNING", "voice.webhook_malformed_payload", {});
+    // Still 200 with empty TwiML - Twilio retries/hangs up on a non-2xx or
+    // missing TwiML response, and a malformed body is not worth a retry storm.
+    res.status(200).set("Content-Type", "text/xml").send("<Response></Response>");
+    return;
+  }
+
+  try {
+    await publish({
+      type: "VOICE.call_event",
+      source: "voice-webhook",
+      payload: normalized,
+    });
+  } catch (err) {
+    log("ERROR", "voice.webhook_publish_failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  // A minimal, honest TwiML response: acknowledge the call without claiming
+  // any capability this phase doesn't have (no live AI conversation loop,
+  // no real transfer) - a short, deterministic template message, gated by
+  // whether the caller's identity resolves (item 19), never CRM data.
+  res
+    .status(200)
+    .set("Content-Type", "text/xml")
+    .send(
+      `<Response><Say>Thank you for calling. Your call has been logged and a team member will follow up with you shortly.</Say></Response>`
+    );
 });

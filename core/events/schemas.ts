@@ -1,10 +1,11 @@
 // core/events/schemas.ts - typed event categories + basic shape validation
 // (Phase 3 / Identity & Events). Categories are a small, fixed set; each
 // implemented category has a minimal real payload shape checked before the
-// event is persisted/routed. EMAIL/WEB/MARKET/VOICE/CALENDAR are RESERVED
-// category names only - valid strings for forward compatibility, but no
-// event source for them exists yet (do not build one; see the non-negotiables
-// in docs/PHASE3_IDENTITY_EVENTS.md).
+// event is persisted/routed. EMAIL/MARKET/CALENDAR remain RESERVED category
+// names only - valid strings for forward compatibility, but no event source
+// for them exists yet (do not build one). VOICE was reserved through Phase 8
+// and is now IMPLEMENTED (Phase 9) - see apps/api/src/routes/webhooks.ts's
+// POST /webhooks/voice route.
 export type EventCategory =
   | "SYSTEM"
   | "SCHEDULE"
@@ -56,6 +57,10 @@ const IMPLEMENTED_CATEGORIES = new Set<EventCategory>([
   "NOTIFICATION",
   "WEB",
   "WHATSAPP",
+  // Phase 9: voice/telephony events (VOICE.call_event etc.) - implemented
+  // for real, published by apps/api/src/routes/webhooks.ts AFTER Twilio
+  // signature verification + dedup, same discipline as WHATSAPP above.
+  "VOICE",
 ]);
 
 /**
@@ -119,6 +124,11 @@ const SHAPE_CHECKS: Record<string, (payload: unknown) => ShapeCheckResult> = {
   WHATSAPP: (p) => {
     if (!isPlainObject(p)) return { valid: false, reason: "WHATSAPP payload must be an object." };
     if (typeof p.providerMessageId !== "string") return { valid: false, reason: "WHATSAPP payload requires a string 'providerMessageId'." };
+    return { valid: true };
+  },
+  VOICE: (p) => {
+    if (!isPlainObject(p)) return { valid: false, reason: "VOICE payload must be an object." };
+    if (typeof p.providerCallId !== "string") return { valid: false, reason: "VOICE payload requires a string 'providerCallId'." };
     return { valid: true };
   },
 };

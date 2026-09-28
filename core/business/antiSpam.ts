@@ -10,12 +10,15 @@ export interface AntiSpamConfig {
   perAccountDailyLimit: number;
   perDomainDailyLimit: number;
   perContactCooldownHours: number;
+  /** Phase 9 (Voice): a stricter, phone-call-specific cooldown, additive - falls back to perContactCooldownHours when unset. */
+  perContactCallCooldownHours?: number;
 }
 
 export const DEFAULT_ANTI_SPAM: AntiSpamConfig = {
   perAccountDailyLimit: 200,
   perDomainDailyLimit: 20,
   perContactCooldownHours: 24,
+  perContactCallCooldownHours: 48,
 };
 
 const SETTINGS_KEY = "business.anti_spam";
@@ -196,6 +199,59 @@ export async function checkWhatsAppAntiSpamLimits(input: { toPhone: string }): P
       const elapsed = Date.now() - contact.lastContactedAt.getTime();
       if (elapsed < cooldownMs) {
         return { allowed: false, reason: `Contact is within its ${config.perContactCooldownHours}h send cooldown (last contacted ${contact.lastContactedAt.toISOString()}).` };
+      }
+    }
+  }
+
+  return { allowed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 (Voice, items 8-9, 25): the SAME SuppressedContact table, keyed by
+// normalizedPhone, that Phase 8's isWhatsAppSuppressed()/
+// suppressWhatsAppContact() already use - a phone number is a single
+// identity across WhatsApp and voice, so a number that has opted out of one
+// is treated as opted out of a cold outbound call too (the safer default -
+// see docs/PHASE9_VOICE.md's honesty note on this design choice; this is
+// NOT a second, phone-scoped-per-channel suppression table, deliberately, to
+// avoid a customer who said "stop messaging me" still receiving a call).
+// isDoNotCall() is the DO_NOT_CALL-flavored name item 28 asks for; it is a
+// thin, documented alias, not a re-derived lookup.
+export async function isDoNotCall(rawPhone: string | null | undefined): Promise<boolean> {
+  return isWhatsAppSuppressed(rawPhone);
+}
+
+export async function suppressPhoneForCalls(rawPhone: string, reason: "UNSUBSCRIBE" | "BOUNCE" | "MANUAL" | "COMPLAINT", contactId?: string): Promise<void> {
+  return suppressWhatsAppContact(rawPhone, reason, contactId);
+}
+
+/**
+ * Phase 9 (items 8-9, 24-25): call-frequency anti-spam limiting - the voice
+ * analogue of checkWhatsAppAntiSpamLimits() above. SAME config
+ * (getAntiSpamConfig()), SAME OutboundSendLog ledger, filtered by
+ * `channel: "VOICE"`. A stricter default per-contact cooldown is used for
+ * calls specifically (a phone call is more intrusive than a message), via
+ * `perContactCallCooldownHours` on the SAME Setting-backed config object -
+ * additive field, does not change any existing email/WhatsApp behavior.
+ */
+export async function checkVoiceAntiSpamLimits(input: { toPhone: string }): Promise<AntiSpamCheckResult> {
+  const config = await getAntiSpamConfig();
+  const since = startOfDayUtc();
+
+  const dailyCount = await prisma.outboundSendLog.count({ where: { status: "SENT", channel: "VOICE", createdAt: { gte: since } } });
+  if (dailyCount >= config.perAccountDailyLimit) {
+    return { allowed: false, reason: `Per-account daily outbound call limit of ${config.perAccountDailyLimit} reached.` };
+  }
+
+  const { normalized } = normalizePhone(input.toPhone);
+  if (normalized) {
+    const contact = await prisma.contact.findFirst({ where: { normalizedPhone: normalized } });
+    if (contact?.lastContactedAt) {
+      const cooldownHours = config.perContactCallCooldownHours ?? config.perContactCooldownHours;
+      const cooldownMs = cooldownHours * 60 * 60 * 1000;
+      const elapsed = Date.now() - contact.lastContactedAt.getTime();
+      if (elapsed < cooldownMs) {
+        return { allowed: false, reason: `Contact is within its ${cooldownHours}h call cooldown (last contacted ${contact.lastContactedAt.toISOString()}).` };
       }
     }
   }

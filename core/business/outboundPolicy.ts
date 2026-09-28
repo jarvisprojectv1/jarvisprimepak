@@ -123,3 +123,54 @@ export function classifyOutboundEmail(ctx: OutboundEmailContext): OutboundRiskRe
 
   return { riskCategory, reasons, policy };
 }
+
+// ---------------------------------------------------------------------------
+// Phase 9 (Voice, item 9): classifyOutboundEmail() above is NOT modified -
+// this is a thin voice-specific WRAPPER, not a second risk engine. Per the
+// brief: an outbound PHONE CALL defaults to HIGH risk regardless of content,
+// because unlike a written message a call cannot be reviewed before it
+// "sends" (the human on the other end hears it live) and it is materially
+// more intrusive/irreversible than an email or WhatsApp message. The ONE
+// narrowly-defined LOW-risk exception, documented explicitly (per the
+// brief's "document exactly what you classify LOW/MEDIUM" instruction): a
+// pure CALLBACK_CONFIRMATION call - i.e. `purpose: "CALLBACK_CONFIRMATION"`
+// explicitly set by the caller AND the underlying content still passes
+// classifyOutboundEmail()'s own HIGH-risk keyword/mass-campaign/monetary
+// checks (so a "callback confirmation" that happens to embed a quote/price/
+// payment link is still HIGH, not silently downgraded by the label alone).
+// No MEDIUM tier is defined this phase - only LOW/HIGH exist in
+// OutboundRiskCategory, and inventing a third tier with no distinct handling
+// anywhere else in the pipeline would be complexity with no real backing.
+export type OutboundCallPurpose = "CALLBACK_CONFIRMATION" | "BUSINESS_OUTREACH" | "GENERAL";
+
+export interface OutboundCallContext {
+  body: string; // the intended talking points / script summary for this call, for content-based scanning
+  purpose?: OutboundCallPurpose;
+  isMassCampaign?: boolean;
+  monetaryValue?: number;
+}
+
+export function classifyOutboundVoice(ctx: OutboundCallContext): OutboundRiskResult {
+  const underlying = classifyOutboundEmail({ subject: "", body: ctx.body, isMassCampaign: ctx.isMassCampaign, monetaryValue: ctx.monetaryValue });
+
+  const isNarrowLowCase = ctx.purpose === "CALLBACK_CONFIRMATION" && underlying.riskCategory === "LOW" && !ctx.isMassCampaign;
+
+  if (isNarrowLowCase) {
+    return { ...underlying, reasons: [...underlying.reasons, "Voice call classified LOW: an explicit CALLBACK_CONFIRMATION with no high-risk content, mass-campaign flag, or monetary value - the one narrow LOW-risk voice case (see core/business/outboundPolicy.ts's classifyOutboundVoice() header)."] };
+  }
+
+  if (underlying.riskCategory === "LOW") {
+    // Every other voice call defaults to HIGH even when the content-only
+    // scan came back LOW - a call is HIGH-risk by DEFAULT (see header).
+    const decisionInput = { actionName: "voice.call", toolName: "voice", irreversible: true, monetaryValue: ctx.monetaryValue };
+    const policy = evaluatePolicy("voice.call", decisionInput);
+    void classify(decisionInput);
+    return {
+      riskCategory: "HIGH",
+      reasons: ["Outbound phone calls default to HIGH risk regardless of content (live, unreviewable, more intrusive than a written message) - see core/business/outboundPolicy.ts's classifyOutboundVoice()."],
+      policy,
+    };
+  }
+
+  return underlying;
+}

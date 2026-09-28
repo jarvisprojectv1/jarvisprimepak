@@ -55,29 +55,29 @@ model Session {
 }
 
 model Contact {
-  id        String   @id @default(uuid())
-  firstName String
-  lastName  String?
-  email     String?
-  phone     String?
-  title     String?
-  companyId String?
-  notes     String?
+  id                String    @id @default(uuid())
+  firstName         String
+  lastName          String?
+  email             String?
+  phone             String?
+  title             String?
+  companyId         String?
+  notes             String?
   // Phase 7 (Email & CRM): normalized (lowercase, trimmed) email used for
   // dedup matching - see core/crm/dedup.ts. Kept separate from `email` (the
   // display value) so dedup never depends on formatting.
-  normalizedEmail String?
+  normalizedEmail   String?
   // Phase 7: true when create/update matched an existing row ambiguously
   // (e.g. same name, different email) - never auto-merged, flagged for a
   // human to resolve. Never silently set back to false except by an explicit
   // dedup-resolution action.
-  possibleDuplicate Boolean  @default(false)
+  possibleDuplicate Boolean   @default(false)
   // Phase 7 anti-spam (item 17): hard suppression flag checked BEFORE outbound
   // risk classification even runs - see core/business/antiSpam.ts. Distinct
   // from the SuppressedContact table (which tracks WHY/WHEN), so a single
   // boolean read is enough on the hot path.
-  unsubscribed    Boolean   @default(false)
-  lastContactedAt DateTime?
+  unsubscribed      Boolean   @default(false)
+  lastContactedAt   DateTime?
   // Phase 8 (WhatsApp, item 9): E.164-style canonical phone form used for
   // dedup/identity matching over WhatsApp - see core/crm/phone.ts. Kept
   // separate from `phone` (the display/raw value) for the exact same reason
@@ -86,9 +86,9 @@ model Contact {
   // contacts can legitimately share no phone (most existing rows have none),
   // and findOrCreateContactByPhone() (core/crm/dedup.ts) is what enforces
   // "no fuzzy/ambiguous merge," not a DB constraint.
-  normalizedPhone String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  normalizedPhone   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   company        Company?        @relation(fields: [companyId], references: [id])
   leads          Lead[]
@@ -102,19 +102,19 @@ model Contact {
 }
 
 model Company {
-  id        String   @id @default(uuid())
-  name      String
-  industry  String?
-  website   String?
-  phone     String?
-  address   String?
-  notes     String?
+  id                String   @id @default(uuid())
+  name              String
+  industry          String?
+  website           String?
+  phone             String?
+  address           String?
+  notes             String?
   // Phase 7: normalized domain (lowercase host, no "www."/protocol) derived
   // from `website` - see core/crm/dedup.ts. Used for company-domain matching.
-  domain    String?
-  possibleDuplicate Boolean @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  domain            String?
+  possibleDuplicate Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   contacts Contact[]
   leads    Lead[]
@@ -131,29 +131,29 @@ model Company {
 // ---------------------------------------------------------------------------
 
 model Lead {
-  id         String   @id @default(uuid())
-  companyId  String?
-  contactId  String?
-  source     String? // e.g. "manual", "web-form", "cold-call" (Phase 2+)
+  id                String   @id @default(uuid())
+  companyId         String?
+  contactId         String?
+  source            String? // e.g. "manual", "web-form", "cold-call" (Phase 2+)
   // Phase 7 (Email & CRM, item 6): extended pipeline, application-validated
   // (see core/crm/pipeline.ts) - SQLite has no enums, same convention as
   // every other status field in this schema:
   // NEW | RESEARCHING | QUALIFIED | CONTACTED | RESPONDED | SAMPLE_REQUESTED |
   // QUOTING | NEGOTIATION | WON | LOST | NURTURE
-  status     String   @default("NEW")
-  value      Float?
-  notes      String?
-  possibleDuplicate Boolean @default(false)
+  status            String   @default("NEW")
+  value             Float?
+  notes             String?
+  possibleDuplicate Boolean  @default(false)
   // Phase 7 (item 9): a lead created FROM research carries a real
   // ResearchRun reference - never a fabricated company/contact. Nullable:
   // most leads are still manually/CRM-created and have no research origin.
-  researchRunId String?
+  researchRunId     String?
   // Phase 7 (item 10): last qualification result, application-validated
   // JSON ({ qualified: true|false|"UNKNOWN", reasons: string[], scoredAt }) -
   // see core/crm/qualification.ts. Never a bare opaque number.
-  qualification String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  qualification     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   company Company? @relation(fields: [companyId], references: [id])
   contact Contact? @relation(fields: [contactId], references: [id])
@@ -182,22 +182,22 @@ model Client {
 // ---------------------------------------------------------------------------
 
 model Communication {
-  id        String   @id @default(uuid())
-  contactId String?
-  channel   String // email | call | sms | whatsapp | chat
-  direction String // inbound | outbound
-  summary   String?
+  id              String   @id @default(uuid())
+  contactId       String?
+  channel         String // email | call | sms | whatsapp | chat
+  direction       String // inbound | outbound
+  summary         String?
   // Phase 7 (item 19): activity type for CRM activity-feed grouping,
   // application-validated - NOTE | EMAIL_SENT | EMAIL_RECEIVED | CALL_LOGGED |
   // STATUS_CHANGE | QUOTE_PREPARED | SAMPLE_REQUESTED | FOLLOW_UP |
   // TASK_LINKED. Left nullable so every pre-Phase-7 row (channel/direction
   // only) still reads back fine.
-  activityType String?
+  activityType    String?
   // Phase 7: id of the related Lead/Quote/Task this activity concerns, so an
   // activity feed can be filtered per pipeline entity without a new table.
   relatedEntityId String?
-  metadata  String? // JSON-encoded extra detail (never raw secrets)
-  createdAt DateTime @default(now())
+  metadata        String? // JSON-encoded extra detail (never raw secrets)
+  createdAt       DateTime @default(now())
 
   contact Contact? @relation(fields: [contactId], references: [id])
 
@@ -205,19 +205,65 @@ model Communication {
   @@map("communications")
 }
 
+// Phase 9 (Voice + Phone/Telephony): GENERALIZED (additive fields only) to
+// carry a real call session, rather than forking a parallel "CallSession"
+// table - the exact same discipline Phase 8 used for Email/WhatsApp (see
+// docs/PHASE8_WHATSAPP.md's "which tables were generalized" section, and
+// docs/PHASE9_VOICE.md for this phase's own rationale). Every pre-Phase-9 row
+// still reads back unchanged: `status` keeps its historical
+// "NOT_IMPLEMENTED" default, and every new column is nullable/defaulted.
 model Call {
   id           String    @id @default(uuid())
   contactId    String?
+  companyId    String?
+  // The open Lead (this CRM's "opportunity" concept - there is no separate
+  // Opportunity model) this call concerns, if any.
+  leadId       String?
   direction    String // inbound | outbound
-  status       String    @default("NOT_IMPLEMENTED") // NOT_IMPLEMENTED until Phase 2 telephony is wired
+  status       String    @default("NOT_IMPLEMENTED") // NOT_IMPLEMENTED until a real provider is configured; then RINGING | IN_PROGRESS | COMPLETED | FAILED | NO_ANSWER | BUSY | CANCELED | BLOCKED
   durationSecs Int?
   transcript   String?
   startedAt    DateTime?
+  answeredAt   DateTime?
   endedAt      DateTime?
   createdAt    DateTime  @default(now())
 
+  // --- Phase 9 additions (all additive/nullable) -------------------------
+  provider               String? // e.g. "twilio" | "mock"
+  // The provider's own call id - the natural idempotent-upsert key for
+  // inbound webhook events (mirrors Email.providerMessageId's role for
+  // WhatsApp/email), and the DB-unique dedup mechanism for inbound call
+  // webhook events (item 5).
+  providerCallId         String? @unique
+  callerNumber           String? // raw, as received from the provider
+  // Canonical E.164-style form via the ONE shared core/crm/dedup.ts
+  // normalizePhone() - never a second normalizer (item 7).
+  normalizedCallerNumber String?
+  // Phase 9 (item 12): the same computeChannelIdempotencyKey()/
+  // reserveIdempotencyKey() mechanism email/WhatsApp use, channel "VOICE".
+  idempotencyKey         String? @unique
+  riskCategory           String? // LOW | HIGH, see core/business/outboundPolicy.ts's classifyOutboundVoice()
+  // NOT_RECORDED by default (item 21: recording is OFF unless
+  // VOICE_RECORDING_ENABLED=true) | METADATA_ONLY | RECORDED
+  recordingStatus        String  @default("NOT_RECORDED")
+  transcriptionStatus    String? // NOT_TRANSCRIBED | PENDING | COMPLETE | FAILED
+  transcriptLanguage     String?
+  transcriptConfidence   Float?
+  // Deterministic voice intent (core/business/voiceIntent.ts), e.g.
+  // CALLBACK_REQUEST | HUMAN_AGENT_REQUEST | WRONG_NUMBER | DO_NOT_CALL |
+  // IDENTITY_UNCLEAR | PRICING_REQUEST | ... | UNKNOWN.
+  intent                 String?
+  // HUMAN_HANDOFF | CALLBACK_SCHEDULED | COMPLETED | NO_ANSWER | ... - see
+  // core/voice/ingest.ts.
+  outcome                String?
+  // Estimated cost (transcription minutes + provider per-minute rate), if
+  // computable - honestly null when no real cost data exists.
+  costEstimate           Float?
+
   contact Contact? @relation(fields: [contactId], references: [id])
 
+  @@index([normalizedCallerNumber])
+  @@index([contactId])
   @@map("calls")
 }
 
@@ -235,48 +281,48 @@ model Call {
 // core/business/idempotency.ts and core/business/outboundPolicy.ts every
 // email send already uses, just with `channel` folded into the key basis.
 model Email {
-  id        String   @id @default(uuid())
-  contactId String?
-  direction String // inbound | outbound
+  id                     String   @id @default(uuid())
+  contactId              String?
+  direction              String // inbound | outbound
   // Phase 8 (item 2): "EMAIL" | "WHATSAPP" (other channels remain literal
   // NOT_IMPLEMENTED strings at the tool layer, never built here). Defaults
   // to "EMAIL" so every pre-Phase-8 row reads back unchanged.
-  channel   String   @default("EMAIL")
-  subject   String?
-  body      String?
+  channel                String   @default("EMAIL")
+  subject                String?
+  body                   String?
   // Phase 7 (Email & CRM): real statuses once tools/email/ is configured -
   // RECEIVED | DRAFT | REQUIRES_APPROVAL | SENDING | SENT | FAILED |
   // BLOCKED | CONFIGURATION_REQUIRED. Default unchanged for backward
   // compatibility with any pre-Phase-7 row.
-  status    String   @default("NOT_IMPLEMENTED")
+  status                 String   @default("NOT_IMPLEMENTED")
   // Phase 7 (item 5): the email provider's own message id - the natural key
   // for idempotent upsert-by-provider-id (a retry must never duplicate the
   // row this message already has). Nullable because a not-yet-sent DRAFT has
   // no provider id yet.
-  providerMessageId String? @unique
-  threadId          String?
-  toAddress         String?
-  fromAddress       String?
+  providerMessageId      String?  @unique
+  threadId               String?
+  toAddress              String?
+  fromAddress            String?
   // Phase 7 (item 13): deterministic pre-classification + optional
   // AI-assisted classification result - see core/business/emailClassification.ts.
   // Application-validated category string, never a free-form LLM action.
-  classification String?
-  classificationReasons String? // JSON array of strings - always paired with classification
+  classification         String?
+  classificationReasons  String? // JSON array of strings - always paired with classification
   // Phase 7 (item 16): the outbound risk classification this email was sent
   // (or blocked) under - LOW | HIGH - see core/business/outboundPolicy.ts.
-  riskCategory String?
+  riskCategory           String?
   // Phase 7 (item 18): idempotency key checked before any real provider send
   // - see core/business/idempotency.ts and the OutboundSendLog table.
-  idempotencyKey String? @unique
-  relatedLeadId  String?
+  idempotencyKey         String?  @unique
+  relatedLeadId          String?
   // Phase 8 (item 7): the provider's own conversation/thread id for a
   // channel where that's a first-class concept distinct from `threadId`
   // (email's In-Reply-To threading) - e.g. the WhatsApp Business Platform's
   // conversation id, used for deterministic conversation identity together
   // with the business account + contact (see core/whatsapp/conversation.ts).
   providerConversationId String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   contact Contact? @relation(fields: [contactId], references: [id])
 
@@ -305,25 +351,25 @@ model Product {
 }
 
 model Quote {
-  id        String   @id @default(uuid())
-  clientId  String?
-  companyId String?
+  id                String    @id @default(uuid())
+  clientId          String?
+  companyId         String?
   // Phase 7 (item 21): extended - DRAFT | REQUIRES_APPROVAL | SENT | ACCEPTED
   // | REJECTED. A quote may ONLY move DRAFT -> REQUIRES_APPROVAL -> SENT via
   // an OWNER-approved ApprovalRequest (core/approvals) - never autonomously.
   // See core/business/quote.test.ts / agents/no-autonomous-quote-send.test.ts.
-  status    String   @default("DRAFT")
-  total     Float?
+  status            String    @default("DRAFT")
+  total             Float?
   // Phase 7: true only if `total` was computed from configured costing rules
   // (core/crm/businessConfig.ts) - never fabricated pricing. When false and
   // total is null, the quote is a spec collection awaiting owner input.
-  totalIsComputed Boolean  @default(false)
+  totalIsComputed   Boolean   @default(false)
   approvalRequestId String?
   sentAt            DateTime?
-  lineItems String? // JSON-encoded array; kept simple for Phase 1
-  leadId    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  lineItems         String? // JSON-encoded array; kept simple for Phase 1
+  leadId            String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   client  Client?  @relation(fields: [clientId], references: [id])
   company Company? @relation(fields: [companyId], references: [id])
@@ -352,46 +398,46 @@ model Order {
 // ---------------------------------------------------------------------------
 
 model Task {
-  id          String    @id @default(uuid())
-  title       String
-  description String?
+  id                     String    @id @default(uuid())
+  title                  String
+  description            String?
   // Phase 2 (Autonomy Core) status set, reconciling the Phase 1 set with the
   // spec addendum's QUEUED/WAITING/CANCELLED/RETRYING states:
   // PENDING | QUEUED | IN_PROGRESS | WAITING | BLOCKED | RETRYING | DONE | FAILED | CANCELLED
-  status      String    @default("PENDING")
+  status                 String    @default("PENDING")
   // Phase 5 (Autonomous Worker): canonical 4-level priority, reconciling the
   // Phase 1-4 LOW|NORMAL|HIGH|URGENT set with the spec's CRITICAL|HIGH|NORMAL|LOW
   // set. URGENT is retired in favor of CRITICAL (see migration
   // phase5_autonomous_worker, which rewrites any existing "URGENT" rows).
-  priority    String    @default("NORMAL") // CRITICAL | HIGH | NORMAL | LOW
-  retryCount  Int       @default(0)
-  ownerId     String?
-  parentId    String?
-  dueAt       DateTime?
+  priority               String    @default("NORMAL") // CRITICAL | HIGH | NORMAL | LOW
+  retryCount             Int       @default(0)
+  ownerId                String?
+  parentId               String?
+  dueAt                  DateTime?
   // Phase 4 (Brain & Memory): when this Task was created from a validated
   // Plan step (core/brain/plan.ts), these record which step it came from so
   // the Brain can map Task rows back to plan steps for verification/re-plan.
-  stepId      String? // Plan.steps[].stepId, if this task originated from a Brain plan
-  agentName   String? // Plan.steps[].agent, if the step delegates to an agent
-  toolName    String? // Plan.steps[].tool, if the step calls a tool directly
+  stepId                 String? // Plan.steps[].stepId, if this task originated from a Brain plan
+  agentName              String? // Plan.steps[].agent, if the step delegates to an agent
+  toolName               String? // Plan.steps[].tool, if the step calls a tool directly
   // Phase 5 (Autonomous Worker): explicit, persisted reason a task is
   // currently WAITING (transient/informational blocker) or BLOCKED
   // (policy/system blocker) - see core/worker/eligibility.ts.
-  waitingReason  String?
-  blockedReason  String?
-  failureReason  String? // Phase 5: last real error message for a FAILED task (core/reports/dailyReport.ts reads this - never fabricated)
+  waitingReason          String?
+  blockedReason          String?
+  failureReason          String? // Phase 5: last real error message for a FAILED task (core/reports/dailyReport.ts reads this - never fabricated)
   // Phase 5: DB-backed claiming so two concurrent worker slots (or, in
   // principle, two processes sharing one SQLite file) cannot both execute the
   // same task - see core/worker/claim.ts. A claim expires so a crashed
   // worker's abandoned claim becomes reclaimable (crash recovery).
-  claimedBy      String?
-  claimedAt      DateTime?
-  claimExpiresAt DateTime?
+  claimedBy              String?
+  claimedAt              DateTime?
+  claimExpiresAt         DateTime?
   // Phase 5: last time the worker evaluated this task's eligibility while it
   // was WAITING/BLOCKED - used for backoff (never re-check every tick).
   lastEligibilityCheckAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   owner    User?  @relation(fields: [ownerId], references: [id])
   parent   Task?  @relation("TaskSubtasks", fields: [parentId], references: [id])
@@ -406,16 +452,16 @@ model Task {
 // core/worker/heartbeat.ts, core/worker/watchdog.ts).
 // ---------------------------------------------------------------------------
 model WorkerHeartbeat {
-  id             String    @id @default(uuid())
-  workerId       String    @unique
-  startedAt      DateTime  @default(now())
-  lastHeartbeat  DateTime  @default(now())
+  id             String   @id @default(uuid())
+  workerId       String   @unique
+  startedAt      DateTime @default(now())
+  lastHeartbeat  DateTime @default(now())
   currentTaskId  String?
-  status         String    @default("IDLE") // RUNNING | IDLE | DEGRADED | STOPPED | CRASHED
-  processedTasks Int       @default(0)
-  failedTasks    Int       @default(0)
-  restartCount   Int       @default(0)
-  updatedAt      DateTime  @updatedAt
+  status         String   @default("IDLE") // RUNNING | IDLE | DEGRADED | STOPPED | CRASHED
+  processedTasks Int      @default(0)
+  failedTasks    Int      @default(0)
+  restartCount   Int      @default(0)
+  updatedAt      DateTime @updatedAt
 
   @@map("worker_heartbeats")
 }
@@ -434,12 +480,12 @@ model DailyReport {
 }
 
 model Agent {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  objective   String
-  status      String   @default("IDLE") // IDLE | RUNNING | NOT_IMPLEMENTED | ERROR
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(uuid())
+  name      String   @unique
+  objective String
+  status    String   @default("IDLE") // IDLE | RUNNING | NOT_IMPLEMENTED | ERROR
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   runs AgentRun[]
 
@@ -527,15 +573,15 @@ model Event {
 }
 
 model Automation {
-  id           String    @id @default(uuid())
-  name         String    @unique
-  triggerType  String // one_time | daily | weekly | monthly | interval | event | condition
-  schedule     String? // cron expression or ISO date, depending on triggerType
-  timezone     String    @default("UTC") // IANA timezone name passed to node-cron
-  enabled      Boolean   @default(true)
-  lastRunAt    DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id          String    @id @default(uuid())
+  name        String    @unique
+  triggerType String // one_time | daily | weekly | monthly | interval | event | condition
+  schedule    String? // cron expression or ISO date, depending on triggerType
+  timezone    String    @default("UTC") // IANA timezone name passed to node-cron
+  enabled     Boolean   @default(true)
+  lastRunAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   runs AutomationRun[]
 
@@ -546,13 +592,13 @@ model Automation {
 // schedule detection, duplicate-execution prevention, and retry/failure
 // auditing without overloading the single `lastRunAt` column on Automation.
 model AutomationRun {
-  id          String    @id @default(uuid())
+  id           String    @id @default(uuid())
   automationId String
-  status      String    @default("RUNNING") // RUNNING | SUCCESS | FAILED
-  startedAt   DateTime  @default(now())
-  endedAt     DateTime?
-  error       String?
-  attempt     Int       @default(1)
+  status       String    @default("RUNNING") // RUNNING | SUCCESS | FAILED
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  error        String?
+  attempt      Int       @default(1)
 
   automation Automation @relation(fields: [automationId], references: [id])
 
@@ -655,16 +701,16 @@ model ResearchRun {
 }
 
 model ResearchSource {
-  id               String    @id @default(uuid())
-  researchRunId    String
-  url              String
-  canonicalUrl     String
-  domain           String
-  title            String?
-  retrievedAt      DateTime  @default(now())
-  publishedAt      DateTime?
-  contentHash      String? // sha256 of extracted text, for dedup/change detection
-  sourceType       String // search_result | fetched_page
+  id                String    @id @default(uuid())
+  researchRunId     String
+  url               String
+  canonicalUrl      String
+  domain            String
+  title             String?
+  retrievedAt       DateTime  @default(now())
+  publishedAt       DateTime?
+  contentHash       String? // sha256 of extracted text, for dedup/change detection
+  sourceType        String // search_result | fetched_page
   discoveredByQuery String?
 
   researchRun ResearchRun        @relation(fields: [researchRunId], references: [id])
@@ -692,14 +738,14 @@ model ResearchEvidence {
 // Business Intelligence tracked topics (Phase 6, item 8): DATA rows, never
 // hardcoded business logic. Also drives the WebEventSource poller (item 7).
 model ResearchTopic {
-  id                 String    @id @default(uuid())
-  name               String    @unique
-  query              String
-  enabled            Boolean   @default(true)
-  pollIntervalMinutes Int      @default(1440) // default: once/day, never more than once/hour (enforced in code)
-  lastPolledAt       DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                  String    @id @default(uuid())
+  name                String    @unique
+  query               String
+  enabled             Boolean   @default(true)
+  pollIntervalMinutes Int       @default(1440) // default: once/day, never more than once/hour (enforced in code)
+  lastPolledAt        DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@map("research_topics")
 }
@@ -709,22 +755,22 @@ model ResearchTopic {
 // ACTIVE automatically - see core/skills/registry.ts and
 // docs/PHASE6_WEB_RESEARCH.md for exactly where the line is drawn.
 model SkillCandidate {
-  id                 String   @id @default(uuid())
-  name               String
-  description        String?
-  version            String   @default("0.1.0")
-  source             String // where the candidate came from (URL, "manual", etc.)
-  capabilities       String? // JSON array
+  id                  String   @id @default(uuid())
+  name                String
+  description         String?
+  version             String   @default("0.1.0")
+  source              String // where the candidate came from (URL, "manual", etc.)
+  capabilities        String? // JSON array
   requiredPermissions String? // JSON array
-  dependencies       String? // JSON array
-  riskLevel          String   @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
-  testStatus         String   @default("NOT_RUN") // NOT_RUN | NOT_IMPLEMENTED | PASSED | FAILED
-  securityStatus     String   @default("PENDING") // PENDING | PASSED | REJECTED
-  activationStatus   String   @default("DISCOVERED")
+  dependencies        String? // JSON array
+  riskLevel           String   @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  testStatus          String   @default("NOT_RUN") // NOT_RUN | NOT_IMPLEMENTED | PASSED | FAILED
+  securityStatus      String   @default("PENDING") // PENDING | PASSED | REJECTED
+  activationStatus    String   @default("DISCOVERED")
   // DISCOVERED | CANDIDATE | ANALYZING | TESTING | VERIFIED | ACTIVATABLE | ACTIVE | REJECTED | DISABLED | DEPRECATED
-  rejectionReason    String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  rejectionReason     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("skill_candidates")
 }
@@ -750,12 +796,12 @@ model SkillCandidate {
 // independently-created, independently-auditable rows (never silently
 // merged) unless a caller explicitly links them via `contactId`.
 model SuppressedContact {
-  id                String   @id @default(uuid())
-  normalizedEmail   String?  @unique
-  normalizedPhone   String?  @unique
-  reason            String // UNSUBSCRIBE | BOUNCE | MANUAL | COMPLAINT
-  contactId         String?
-  createdAt         DateTime @default(now())
+  id              String   @id @default(uuid())
+  normalizedEmail String?  @unique
+  normalizedPhone String?  @unique
+  reason          String // UNSUBSCRIBE | BOUNCE | MANUAL | COMPLAINT
+  contactId       String?
+  createdAt       DateTime @default(now())
 
   @@map("suppressed_contacts")
 }
@@ -773,29 +819,29 @@ model SuppressedContact {
 // suppression/anti-spam/idempotency/risk/approval pipeline inside
 // tools/email/emailTool.ts's existing `send` action - no second sender.
 model FollowUp {
-  id            String    @id @default(uuid())
-  leadId        String?
-  contactId     String?
-  sequenceStep  Int       @default(1)
+  id           String   @id @default(uuid())
+  leadId       String?
+  contactId    String?
+  sequenceStep Int      @default(1)
   // Phase 8 (item 20): "EMAIL" | "WHATSAPP" - which tool the dispatcher tags
   // the Task with (toolName: "email" | "whatsapp"). Reuses the SAME
   // scheduleDueFollowUps() dispatch pass / hourly job for both channels -
   // deliberately NOT a second scheduler (see core/business/followUp.ts).
-  channel       String    @default("EMAIL")
-  subject       String
-  body          String
-  scheduledFor  DateTime
+  channel      String   @default("EMAIL")
+  subject      String
+  body         String
+  scheduledFor DateTime
   // SCHEDULED | CANCELLED | EXECUTED | SKIPPED (application-validated, same
   // "SQLite has no enums" convention as every other status field here).
-  status        String    @default("SCHEDULED")
-  cancelReason  String?
+  status       String   @default("SCHEDULED")
+  cancelReason String?
   // The Task row that will (or did) execute this follow-up, tagged
   // toolName:"email" so the worker calls the SAME guarded email tool every
   // other send goes through. Unique: at most one Task per FollowUp, set
   // exactly once by the dispatch pass (core/business/followUp.ts).
-  taskId        String?   @unique
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  taskId       String?  @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([leadId, sequenceStep])
   @@index([status, scheduledFor])
@@ -837,29 +883,29 @@ model OutboundSendLog {
 // audited via the normal security/audit.ts path (the approve/reject HTTP
 // routes call writeAuditLog like every other authenticated write).
 model ApprovalRequest {
-  id                  String    @id @default(uuid())
-  action              String // e.g. "email.send", "quote.send"
-  reason              String
-  target              String // e.g. a Contact/Company/Lead id, human-readable in `target`
-  proposedContent     String // JSON-encoded, e.g. { subject, body, to } - immutable once created
-  supportingContext   String? // JSON-encoded (CRM context, research refs, etc.)
-  riskClassification  String // HIGH | CRITICAL (only HIGH-risk-or-above actions ever reach this queue)
+  id                 String    @id @default(uuid())
+  action             String // e.g. "email.send", "quote.send"
+  reason             String
+  target             String // e.g. a Contact/Company/Lead id, human-readable in `target`
+  proposedContent    String // JSON-encoded, e.g. { subject, body, to } - immutable once created
+  supportingContext  String? // JSON-encoded (CRM context, research refs, etc.)
+  riskClassification String // HIGH | CRITICAL (only HIGH-risk-or-above actions ever reach this queue)
   // Phase 8 (item 29): "EMAIL" | "WHATSAPP" - which channel this approval
   // concerns. Additive/optional-by-default column for filtering; the actual
   // channel/recipient-phone/conversation-id detail already lives in
   // `supportingContext` JSON (no schema change needed there - see
   // tools/whatsapp/whatsappTool.ts).
-  channel             String    @default("EMAIL")
-  taskId              String?
-  idempotencyKey      String?   @unique
-  status              String    @default("PENDING") // PENDING | APPROVED | REJECTED | EXPIRED
-  createdBy           String // Identity label
-  decidedBy           String?
-  decidedAt           DateTime?
-  decisionNote        String?
-  expiresAt           DateTime?
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  channel            String    @default("EMAIL")
+  taskId             String?
+  idempotencyKey     String?   @unique
+  status             String    @default("PENDING") // PENDING | APPROVED | REJECTED | EXPIRED
+  createdBy          String // Identity label
+  decidedBy          String?
+  decidedAt          DateTime?
+  decisionNote       String?
+  expiresAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@index([status])
   @@index([taskId])
@@ -872,16 +918,16 @@ model ApprovalRequest {
 // may ONLY cite facts present in this table (or explicit config rows) -
 // anything else becomes a placeholder in a draft/quote, never an invention.
 model ProductCategory {
-  id                    String   @id @default(uuid())
-  name                  String   @unique
-  description           String?
-  positioning           String?
-  certifications        String? // JSON array of strings
-  minOrderQuantity      String?
-  productionTimeNotes   String?
-  costingRulesJson      String? // JSON: { unit, baseUnitCost, currency } - only used if present
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  name                String   @unique
+  description         String?
+  positioning         String?
+  certifications      String? // JSON array of strings
+  minOrderQuantity    String?
+  productionTimeNotes String?
+  costingRulesJson    String? // JSON: { unit, baseUnitCost, currency } - only used if present
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("product_categories")
 }

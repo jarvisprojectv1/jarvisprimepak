@@ -43,5 +43,14 @@ export const ACTIVITY_TYPES = [
   // channel uses (core/crm/activity.ts) - no parallel activity system.
   "WHATSAPP_SENT",
   "WHATSAPP_RECEIVED",
+  // Phase 9 (Voice): the same activity-feed shape, recorded through the SAME
+  // recordActivity() every other channel uses - no parallel CRM subsystem.
+  "CALL_INBOUND",
+  "CALL_OUTBOUND",
+  "CALL_MISSED",
+  "CALL_COMPLETED",
+  "CALL_FAILED",
+  "CALLBACK_REQUESTED",
+  "CALL_HUMAN_HANDOFF",
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

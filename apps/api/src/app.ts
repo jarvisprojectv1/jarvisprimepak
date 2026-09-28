@@ -38,6 +38,23 @@ export function createApp(): Express {
       },
     })
   );
+  // Phase 9 (item 5): Twilio's voice webhook POSTs
+  // application/x-www-form-urlencoded (not JSON) - the SAME rawBody-capture
+  // pattern as the json() parser above, generalized to this content-type, so
+  // apps/api/src/routes/webhooks.ts's POST /webhooks/voice can verify
+  // Twilio's X-Twilio-Signature against the exact parsed param set (Twilio's
+  // algorithm signs the parsed key/value pairs, not raw bytes - see
+  // core/voice/webhook.ts - but capturing rawBody here too costs nothing and
+  // keeps this middleware stack uniform/auditable for any future
+  // byte-exact-signature provider).
+  app.use(
+    express.urlencoded({
+      extended: false,
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      },
+    })
+  );
 
   // Unauthenticated: /health (liveness), /auth/login (you can't log in if
   // login itself requires a session), and /webhooks (authenticated by
