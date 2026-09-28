@@ -282,3 +282,74 @@ WHAT SHOULD BE BUILT NEXT
 - Voice/telephony, browser/computer automation, real email/calendar/web
   search integrations - unchanged from Phase 1/2's scope (explicitly out of
   scope here too, per the non-negotiables in docs/PHASE3_IDENTITY_EVENTS.md).
+
+PHASE 4 UPDATE (BRAIN & MEMORY) — see docs/PHASE4_BRAIN_MEMORY.md for full
+detail; summary below.
+
+NEWLY IMPLEMENTED
+- core/ai: the AI provider layer is completed - configurable request
+  timeout, bounded retry with backoff on transient (429/5xx) failures only,
+  real Anthropic native tool-use (tools/toolUses on AICompletionResult),
+  real token usage capture (response.usage, never estimated) persisted to a
+  new AiUsage table with an approximate, documented per-model cost estimate
+  (core/ai/pricing.ts). Streaming is honestly NOT implemented - nothing
+  built in this phase consumes a token stream.
+- core/ai/costControl.ts: configurable daily/monthly USD spend limits
+  (`settings` key ai.cost_control), checked before every Brain-initiated LLM
+  call; exceeding either limit skips the call, raises a real Notification,
+  and moves the associated task (if any) to WAITING.
+- core/brain: the JARVIS Core Brain - OBSERVE -> UNDERSTAND -> RETRIEVE ->
+  PLAN -> POLICY CHECK -> EXECUTE -> VERIFY -> REMEMBER -> REPORT for one
+  request. Plans are proposed via real Anthropic tool-use (a synthetic
+  `propose_plan` tool), validated as pure data before any step executes
+  (core/brain/plan.ts, never eval'd), and every step runs ONLY through the
+  existing tools/registry.execute()/agents/registry .run() - the same
+  objects core/enforcement already wraps - never a bypass path (proven in
+  core/brain/brain.test.ts, mirroring Phase 2's enforcement no-bypass
+  proof). Checks core/state before starting and between steps, so a
+  PAUSED/EMERGENCY_STOP system halts a multi-step plan mid-run rather than
+  finishing it. A step needing a NOT_IMPLEMENTED/CONFIGURATION_REQUIRED
+  tool honestly returns REQUIRES_TOOL - never fabricated success (the "50
+  apparel prospects" case from the spec is a real, tested behavior). /chat
+  now routes through the Brain (a strict superset of the old orchestrator);
+  the pre-existing CONFIGURATION_REQUIRED chat test still passes unmodified.
+- core/context: the Phase 1 stub is replaced with a real, bounded Context
+  Builder - capped conversation history, deterministic keyword-matched
+  relevant memories (explicitly no embeddings), active tasks, business-
+  heuristic recent leads, system state, and available (non-disabled) tools.
+- core/memory: extended with content/source/confidence/relatedEntity/
+  metadata/expiresAt/updatedAt fields and a 10th namespace (DECISION), plus
+  remember/retrieve/supersede/forget operations (aliases over the existing
+  append-only create/read/update, so nothing breaks) - forget() sets
+  expiresAt without ever deleting a row, matching the append-only history
+  design.
+- core/planner: planFromPlan() creates a parent Task + one subtask per Plan
+  step, tagged with stepId/agentName/toolName (new nullable Task columns);
+  planTask/updateTaskStatus/listTasks unchanged for existing callers.
+- agents/: AgentRunResult gained evidence/result/errors/nextAction (purely
+  additive); two new real, DB-backed agents - TaskAgent (wraps
+  core/planner) and SystemAgent (read-only core/health/core/state queries,
+  cannot pause/stop/disable anything). agents/contract.ts's
+  checkAgentResultContract() is a real runtime check that an agent never
+  reports SUCCESS with empty evidence.
+- apps/api: new GET /brain/tasks and GET /brain/usage observability routes
+  (new brain.read authz action), never exposing raw model reasoning.
+- Database: migration `phase4_brain_memory` (Memory's new columns + DECISION
+  namespace value, new AiUsage table, Task's stepId/agentName/toolName
+  columns).
+- 38 new tests (core/memory extended to 10, core/brain/plan.test.ts,
+  core/brain/brain.test.ts, core/ai/costControl.test.ts,
+  agents/contract.test.ts) - 164/164 tests passing in total (up from
+  126/126 in Phase 3).
+
+WHAT SHOULD BE BUILT NEXT
+- A standing autonomous loop (Phase 5): a scheduler/event-driven loop that
+  re-invokes the Brain against active/waiting tasks without a human message
+  triggering each run.
+- Real event sources for the still-reserved categories (CRM/EMAIL/WEB/
+  MARKET/VOICE/CALENDAR) so the Brain can react to real business events.
+- A fuller dependency-graph scheduler for Plan steps (today: one concurrent
+  batch of independent steps, then sequential) and a deeper, multi-attempt
+  re-planning loop (today: one single documented re-plan attempt).
+- Real integrations behind the still-stubbed tools (email/calendar/web
+  search/browser/computer/voice) - unchanged scope from Phases 1-3.
