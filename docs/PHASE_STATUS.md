@@ -342,7 +342,7 @@ NEWLY IMPLEMENTED
   agents/contract.test.ts) - 164/164 tests passing in total (up from
   126/126 in Phase 3).
 
-WHAT SHOULD BE BUILT NEXT
+WHAT SHOULD BE BUILT NEXT (as of end of Phase 4)
 - A standing autonomous loop (Phase 5): a scheduler/event-driven loop that
   re-invokes the Brain against active/waiting tasks without a human message
   triggering each run.
@@ -353,3 +353,101 @@ WHAT SHOULD BE BUILT NEXT
   re-planning loop (today: one single documented re-plan attempt).
 - Real integrations behind the still-stubbed tools (email/calendar/web
   search/browser/computer/voice) - unchanged scope from Phases 1-3.
+
+PHASE 5 UPDATE (AUTONOMOUS WORKER) — see docs/PHASE5_AUTONOMOUS_WORKER.md for
+full detail; summary below.
+
+NEWLY IMPLEMENTED
+- core/worker: a standing Autonomous Worker loop (`Worker` class, singleton
+  `worker`), started once at API boot alongside `recoverUnfinishedTasks()`.
+  An in-process `setInterval` tick (default 2s) + a separate, faster
+  heartbeat interval (default 1s) - genuinely keeps running for as long as
+  the API process is alive, honestly NOT a separate OS-level daemon (no
+  process supervisor in this stack). Every tick: reclaims expired claims,
+  checks system state, re-checks stale WAITING/BLOCKED tasks on a cooldown,
+  selects eligible top-level tasks in priority order, claims them (DB-backed,
+  see below), and executes each through the exact same
+  `toolRegistry.execute()`/`agent.run()`/`brain.handle()` paths every other
+  caller uses - proven by two explicit no-bypass tests mirroring Phase 2's.
+- core/worker/eligibility.ts: `isTaskEligible()` - a deterministic pre-filter
+  (status, scheduled time, parent-task dependency, system state, retry
+  backoff/limit, agent-pause, tool-disable, autonomy-policy pre-check,
+  rate-limit pre-check). A failing task transitions to WAITING or BLOCKED
+  with a persisted, human-readable reason (new `Task.waitingReason`/
+  `blockedReason` columns) and is excluded from the main candidate query
+  entirely - a bounded, cooldown-gated re-check pass (never every tick)
+  re-evaluates WAITING/BLOCKED tasks separately.
+- core/worker/claim.ts: DB-backed task claiming - a single conditional
+  `prisma.task.updateMany()` is the lock, not an in-memory mutex; a test
+  fires two concurrent claim attempts on the same row and asserts exactly
+  one succeeds. Claims expire (`claimExpiresAt`), and `reclaimExpiredTasks()`
+  (run every tick, plus extended into boot-time `recoverUnfinishedTasks()`)
+  is the crash-recovery mechanism for a task a now-dead worker slot
+  abandoned mid-flight - tested end-to-end (crash -> restart -> RETRYING ->
+  claim cleared -> reclaimable, duplicate execution prevented by the DB
+  write, not luck).
+- core/worker/heartbeat.ts + new `WorkerHeartbeat` table: liveness exposed as
+  an 11th `GET /system/health` component (`core/health`'s existing ten
+  checks are unchanged).
+- core/worker/watchdog.ts: detects heartbeat timeout, repeated failures,
+  task starvation, queue growth, and excessive retries. Can restart the
+  worker loop with exponential backoff and a hard cap on attempts within a
+  time window - genuinely never an infinite restart loop (tested); giving up
+  permanently marks the heartbeat CRASHED, raises a CRITICAL notification,
+  and writes an audit log entry.
+- core/planner: priority reconciled to the canonical CRITICAL|HIGH|NORMAL|LOW
+  (URGENT retired; migration rewrites any existing URGENT rows). New
+  `core/worker/queue.ts` orders candidates by priority then creation time; a
+  single repeatedly-failing task cannot starve the queue (its own backoff
+  keeps it out of the way without blocking the rest).
+- core/worker/spawn.ts + `agents/task-agent.ts`'s new `create_child` action:
+  autonomous follow-up task creation (parentId set to the originating task),
+  with hard-enforced (not just documented) limits - max children per parent,
+  max recursion depth, max tasks per tree, and duplicate detection - each
+  individually tested; every rejection raises a WARNING notification and an
+  audit log entry.
+- scheduler/index.ts + core/conditions/rules.ts: a new `daily-report` cron
+  job (21:00 UTC) alongside the existing Phase 3 `morning-briefing` job
+  (left at 07:00, not moved to 05:00 - a documented, deliberate choice),
+  following the identical publish-then-condition-rule pattern; the created
+  task is tagged `toolName:"reports"` so the worker runs it directly.
+- core/reports/dailyReport.ts + new `tools/reports.ts` + new `DailyReport`
+  table: a Daily Executive Report generated strictly from real data (Task
+  rows by status with their real persisted reasons, WorkerHeartbeat uptime,
+  SystemLog error counts, AiUsage cost/token totals, Lead counts) - a
+  business metric with no real data source is reported as the literal
+  string "no data", never fabricated.
+- apps/api: `POST /tasks/:id/resume` (owner interruption - publishes a real
+  `USER.task_resumed` event, moves a WAITING/BLOCKED task back to PENDING);
+  new `GET /worker/status`, `GET /worker/report/latest`, `GET /worker/actions`
+  observability routes (new `worker.read`/`worker.write`/`report.read`
+  authz actions).
+- core/events/sources.ts: real TypeScript interfaces + explicit
+  NOT_IMPLEMENTED stub classes for CRMEventSource/EmailEventSource/
+  WebEventSource/MarketEventSource/VoiceEventSource/CalendarEventSource -
+  foundation only, no real adapter built for any of them. TASK and USER
+  events now have real publish paths (the worker's outcome events, the
+  owner-resume route).
+- Database: migration `phase5_autonomous_worker` (Task gained
+  waitingReason/blockedReason/failureReason/claimedBy/claimedAt/
+  claimExpiresAt/lastEligibilityCheckAt; URGENT priority rows rewritten to
+  CRITICAL; new WorkerHeartbeat and DailyReport tables).
+- 49 new tests (core/worker/* - eligibility, claim, heartbeat, watchdog,
+  spawn, worker loop incl. two NO-BYPASS proofs; core/reports/dailyReport;
+  agents/task-agent's create_child; apps/api/tests/worker; a new
+  core/conditions test for the daily-report rule) - 213/213 tests passing in
+  total (up from 164/164 in Phase 4).
+
+WHAT SHOULD BE BUILT NEXT
+- Real event sources for the still-reserved categories (CRM/EMAIL/WEB/
+  MARKET/VOICE/CALENDAR) - a genuine CRM webhook receiver would be the
+  highest-leverage one, since the crm-new-hot-lead-research condition rule
+  already exists and is only ever exercised by manual/test publishes today.
+- A tighter Brain-to-existing-task integration, so a worker-delegated
+  generic (untagged) task's own row reflects the Brain's real step-by-step
+  progress instead of a single terminal status once the Brain's own,
+  separate task tree finishes.
+- A real cron-expression parser for the scheduler's missed-schedule
+  detection (carried over from Phase 3, still not addressed).
+- Real integrations behind the still-stubbed tools (email/calendar/web
+  search/browser/computer/voice) - unchanged scope from Phases 1-4.

@@ -1,5 +1,13 @@
 # JARVIS Architecture — Phase 1 (Foundation)
 
+> This file documents Phase 1's original layout only. For everything added
+> since, see `docs/PHASE_STATUS.md` (a running log across all phases) and the
+> per-phase docs: `docs/PHASE2_AUTONOMY.md`, `docs/PHASE3_IDENTITY_EVENTS.md`,
+> `docs/PHASE4_BRAIN_MEMORY.md`, `docs/PHASE5_AUTONOMOUS_WORKER.md`. Notably,
+> Phase 5 added `core/worker/` (the standing Autonomous Worker loop) and
+> `core/reports/` (the Daily Executive Report), neither of which appears in
+> the directory layout below.
+
 ## Goals of this phase
 
 Per the master spec (sections 41/45/46), Phase 1's only success condition is:
