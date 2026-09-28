@@ -5,7 +5,7 @@ import { toolRegistry } from "./registry";
 import { filesTool } from "./files";
 import { browserTool } from "./browser";
 import { computerTool } from "./computer";
-import { emailTool } from "./email";
+import { emailTool } from "./email/emailTool";
 import { calendarTool } from "./calendar";
 import { voiceTool } from "./voice";
 import { webTool } from "./web";
