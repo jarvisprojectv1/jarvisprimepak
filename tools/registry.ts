@@ -5,6 +5,7 @@
 // here, and the orchestrator (or an agent) invokes them by name.
 import { log } from "../security/logger";
 import { guardToolExecution } from "../core/enforcement";
+import type { Identity } from "../core/auth/identity";
 
 export interface ToolInputSchema {
   /** JSON-schema-ish description, kept simple for Phase 1. */
@@ -32,7 +33,11 @@ export interface Tool {
   name: string;
   description: string;
   inputSchema: ToolInputSchema;
-  execute(input: Record<string, unknown>): Promise<ToolResult>;
+  // The second, optional `identity` parameter is populated by the
+  // enforcement gate wrapper (core/enforcement.guardToolExecution) at
+  // registration time; a plain Tool implementation only needs to satisfy the
+  // one-argument shape here.
+  execute(input: Record<string, unknown>, identity?: Identity): Promise<ToolResult>;
 }
 
 export class ToolRegistry {
@@ -63,7 +68,8 @@ export class ToolRegistry {
 
   async execute(
     name: string,
-    input: Record<string, unknown> = {}
+    input: Record<string, unknown> = {},
+    identity?: Identity
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
@@ -77,7 +83,7 @@ export class ToolRegistry {
 
     log("TOOL", `tool.execute:${name}`, { input });
     try {
-      const result = await tool.execute(input);
+      const result = await tool.execute(input, identity);
       log("TOOL", `tool.result:${name}`, { status: result.status });
       return result;
     } catch (err) {

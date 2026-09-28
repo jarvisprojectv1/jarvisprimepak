@@ -11,6 +11,7 @@
     "prisma:generate": "prisma generate --schema=database/schema.prisma",
     "prisma:migrate": "cross-env DATABASE_URL=file:./dev.db prisma migrate dev --schema=database/schema.prisma --name init",
     "prisma:studio": "cross-env DATABASE_URL=file:./dev.db prisma studio --schema=database/schema.prisma",
+    "seed:owner": "tsx scripts/seed-owner.ts",
     "dev:api": "npm run dev -w apps/api",
     "dev:web": "npm run dev -w apps/web",
     "build": "npm run build -w apps/api && npm run build -w apps/web",
@@ -30,6 +31,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.3",
     "@prisma/client": "^5.19.1",
+    "@types/bcrypt": "^6.0.0",
+    "bcrypt": "^6.0.0",
     "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
     "pino": "^9.4.0",

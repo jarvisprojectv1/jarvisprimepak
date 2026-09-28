@@ -18,6 +18,8 @@ export interface LimitsConfig {
   retryLimit: number;
   /** Max tasks that may be created in a rolling 24h day. */
   dailyTaskLimit: number;
+  /** Max login attempts per rolling minute, keyed by email+IP (Phase 3 auth). */
+  loginRateLimitPerMinute: number;
 }
 
 export const DEFAULT_LIMITS: LimitsConfig = {
@@ -26,6 +28,7 @@ export const DEFAULT_LIMITS: LimitsConfig = {
   concurrentAgentLimit: 5,
   retryLimit: 3,
   dailyTaskLimit: 500,
+  loginRateLimitPerMinute: 5,
 };
 
 const SETTINGS_KEY = "limits.config";
@@ -64,6 +67,7 @@ interface Bucket {
 
 const toolBuckets = new Map<string, Bucket>();
 const agentBuckets = new Map<string, Bucket>();
+const loginBuckets = new Map<string, Bucket>();
 let dailyTaskBucket: Bucket = { windowStart: Date.now(), count: 0 };
 const runningAgents = new Set<string>(); // per-invocation tokens, for concurrency accounting
 
@@ -96,6 +100,21 @@ export async function checkAgentRate(agentName: string): Promise<{ allowed: bool
     const reason = `Agent "${agentName}" exceeded its rate limit of ${limits.agentRateLimitPerMinute}/minute.`;
     log("SECURITY", "limits.agent_rate_exceeded", { agentName, limit: limits.agentRateLimitPerMinute });
     return { allowed, reason };
+  }
+  return { allowed: true };
+}
+
+/**
+ * Login attempt rate limiter, keyed by "email:ip" (Phase 3 auth). Same
+ * in-process rolling-window pattern as the tool/agent limiters above -
+ * intentionally not distributed, see docs/PHASE2_AUTONOMY.md limitations.
+ */
+export async function checkLoginRate(key: string): Promise<{ allowed: boolean; reason?: string }> {
+  const limits = await getLimitsConfig();
+  const allowed = checkAndBump(loginBuckets, key, limits.loginRateLimitPerMinute);
+  if (!allowed) {
+    log("SECURITY", "limits.login_rate_exceeded", { key });
+    return { allowed, reason: `Too many login attempts. Try again in a minute.` };
   }
   return { allowed: true };
 }
@@ -156,6 +175,7 @@ export function checkRetryLimit(retryCount: number, limit: number): boolean {
 export function __resetLimitsForTests(): void {
   toolBuckets.clear();
   agentBuckets.clear();
+  loginBuckets.clear();
   dailyTaskBucket = { windowStart: Date.now(), count: 0 };
   runningAgents.clear();
 }

@@ -18,17 +18,39 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  role      String   @default("owner") // owner | admin | staff
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String?
+  role         String   @default("OWNER") // OWNER | SYSTEM | AGENT | SERVICE (see core/auth/identity.ts)
+  passwordHash String? // bcrypt hash; null until a login flow creates one (e.g. the owner seed script)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   tasks         Task[]
   notifications Notification[]
+  sessions      Session[]
 
   @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Auth: server-side, revocable sessions (Phase 3 / Identity & Events).
+// Raw tokens are never stored - only a hash of the token, so a DB read alone
+// can never be replayed as a valid session. See core/auth/session.ts.
+// ---------------------------------------------------------------------------
+model Session {
+  id         String    @id @default(uuid())
+  userId     String
+  tokenHash  String    @unique
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("sessions")
 }
 
 model Contact {
@@ -296,12 +318,33 @@ model Automation {
   name         String    @unique
   triggerType  String // one_time | daily | weekly | monthly | interval | event | condition
   schedule     String? // cron expression or ISO date, depending on triggerType
+  timezone     String    @default("UTC") // IANA timezone name passed to node-cron
   enabled      Boolean   @default(true)
   lastRunAt    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  runs AutomationRun[]
+
   @@map("automations")
+}
+
+// Per-run execution history for a scheduled job (Phase 3): supports missed-
+// schedule detection, duplicate-execution prevention, and retry/failure
+// auditing without overloading the single `lastRunAt` column on Automation.
+model AutomationRun {
+  id          String    @id @default(uuid())
+  automationId String
+  status      String    @default("RUNNING") // RUNNING | SUCCESS | FAILED
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  error       String?
+  attempt     Int       @default(1)
+
+  automation Automation @relation(fields: [automationId], references: [id])
+
+  @@index([automationId])
+  @@map("automation_runs")
 }
 
 model Notification {
@@ -309,12 +352,34 @@ model Notification {
   userId    String?
   title     String
   body      String?
+  type      String   @default("INFO") // INFO | WARNING | ACTION_REQUIRED | ERROR | CRITICAL
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
   user User? @relation(fields: [userId], references: [id])
 
   @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Condition Engine (Phase 3 / Identity & Events): declarative rules linking
+// an event type/category to a condition (JSON, never executable code) and an
+// action to take when it matches. Kept separate from `Automation` (which is
+// specifically cron/time-driven jobs) because a ConditionRule reacts to
+// *events*, not the clock - see core/conditions and docs/PHASE3_IDENTITY_EVENTS.md.
+// ---------------------------------------------------------------------------
+model ConditionRule {
+  id            String   @id @default(uuid())
+  name          String   @unique
+  eventType     String // exact event type this rule listens for, e.g. "crm.lead.created"
+  conditionJson String // JSON condition tree (see core/conditions) - never eval'd, only walked
+  actionType    String // "create_task" (the only implemented action kind in this phase)
+  actionParams  String // JSON-encoded params for actionType, e.g. { "title": "...", "template": "research" }
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("condition_rules")
 }
 
 model Document {
