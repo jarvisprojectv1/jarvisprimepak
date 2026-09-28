@@ -239,7 +239,11 @@ model Task {
   // spec addendum's QUEUED/WAITING/CANCELLED/RETRYING states:
   // PENDING | QUEUED | IN_PROGRESS | WAITING | BLOCKED | RETRYING | DONE | FAILED | CANCELLED
   status      String    @default("PENDING")
-  priority    String    @default("NORMAL") // LOW | NORMAL | HIGH | URGENT
+  // Phase 5 (Autonomous Worker): canonical 4-level priority, reconciling the
+  // Phase 1-4 LOW|NORMAL|HIGH|URGENT set with the spec's CRITICAL|HIGH|NORMAL|LOW
+  // set. URGENT is retired in favor of CRITICAL (see migration
+  // phase5_autonomous_worker, which rewrites any existing "URGENT" rows).
+  priority    String    @default("NORMAL") // CRITICAL | HIGH | NORMAL | LOW
   retryCount  Int       @default(0)
   ownerId     String?
   parentId    String?
@@ -250,6 +254,22 @@ model Task {
   stepId      String? // Plan.steps[].stepId, if this task originated from a Brain plan
   agentName   String? // Plan.steps[].agent, if the step delegates to an agent
   toolName    String? // Plan.steps[].tool, if the step calls a tool directly
+  // Phase 5 (Autonomous Worker): explicit, persisted reason a task is
+  // currently WAITING (transient/informational blocker) or BLOCKED
+  // (policy/system blocker) - see core/worker/eligibility.ts.
+  waitingReason  String?
+  blockedReason  String?
+  failureReason  String? // Phase 5: last real error message for a FAILED task (core/reports/dailyReport.ts reads this - never fabricated)
+  // Phase 5: DB-backed claiming so two concurrent worker slots (or, in
+  // principle, two processes sharing one SQLite file) cannot both execute the
+  // same task - see core/worker/claim.ts. A claim expires so a crashed
+  // worker's abandoned claim becomes reclaimable (crash recovery).
+  claimedBy      String?
+  claimedAt      DateTime?
+  claimExpiresAt DateTime?
+  // Phase 5: last time the worker evaluated this task's eligibility while it
+  // was WAITING/BLOCKED - used for backoff (never re-check every tick).
+  lastEligibilityCheckAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -258,6 +278,39 @@ model Task {
   subtasks Task[] @relation("TaskSubtasks")
 
   @@map("tasks")
+}
+
+// ---------------------------------------------------------------------------
+// Autonomous Worker (Phase 5) - heartbeat so the worker loop's liveness is
+// observable and recoverable even though it runs in-process (see
+// core/worker/heartbeat.ts, core/worker/watchdog.ts).
+// ---------------------------------------------------------------------------
+model WorkerHeartbeat {
+  id             String    @id @default(uuid())
+  workerId       String    @unique
+  startedAt      DateTime  @default(now())
+  lastHeartbeat  DateTime  @default(now())
+  currentTaskId  String?
+  status         String    @default("IDLE") // RUNNING | IDLE | DEGRADED | STOPPED | CRASHED
+  processedTasks Int       @default(0)
+  failedTasks    Int       @default(0)
+  restartCount   Int       @default(0)
+  updatedAt      DateTime  @updatedAt
+
+  @@map("worker_heartbeats")
+}
+
+// One row per generated Daily Executive Report (Phase 5 /
+// core/reports/dailyReport.ts) - a dedicated small table rather than
+// overloading Memory, since a report is a distinct, queryable business
+// artifact with its own date identity.
+model DailyReport {
+  id         String   @id @default(uuid())
+  reportDate String   @unique // YYYY-MM-DD (UTC)
+  content    String // JSON-encoded DailyReportContent
+  createdAt  DateTime @default(now())
+
+  @@map("daily_reports")
 }
 
 model Agent {
