@@ -1,0 +1,34 @@
+// tools/index.ts - registers every built-in tool into the shared registry.
+// Import this once at process startup (apps/api/src/index.ts does this)
+// before the orchestrator tries to execute any tool by name.
+import { toolRegistry } from "./registry";
+import { filesTool } from "./files";
+import { browserTool } from "./browser";
+import { computerTool } from "./computer";
+import { emailTool } from "./email";
+import { calendarTool } from "./calendar";
+import { voiceTool } from "./voice";
+import { webTool } from "./web";
+
+let registered = false;
+
+export function registerBuiltinTools(): void {
+  if (registered) return;
+  for (const tool of [
+    filesTool,
+    browserTool,
+    computerTool,
+    emailTool,
+    calendarTool,
+    voiceTool,
+    webTool,
+  ]) {
+    if (!toolRegistry.get(tool.name)) {
+      toolRegistry.register(tool);
+    }
+  }
+  registered = true;
+}
+
+export { toolRegistry } from "./registry";
+export type { Tool, ToolResult, ToolStatus } from "./registry";
