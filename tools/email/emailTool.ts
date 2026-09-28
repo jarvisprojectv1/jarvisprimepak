@@ -29,11 +29,12 @@ import { ingestInboundEmail } from "../../core/email/ingest";
 import { isSuppressed } from "../../core/business/antiSpam";
 import { checkAntiSpamLimits } from "../../core/business/antiSpam";
 import { classifyOutboundEmail } from "../../core/business/outboundPolicy";
-import { computeIdempotencyKey, checkIdempotency, recordSendAttempt } from "../../core/business/idempotency";
+import { computeIdempotencyKey, checkIdempotency, recordSendAttempt, reserveIdempotencyKey } from "../../core/business/idempotency";
 import { createApprovalRequest, getApprovalRequest } from "../../core/approvals";
 import { recordActivity } from "../../core/crm/activity";
 import { generateDraft, validateDraftGrounding, type DraftContext } from "../../core/business/emailDraft";
 import { getProductCategory } from "../../core/crm/businessConfig";
+import { isFollowUpAllowed } from "../../core/business/followUp";
 import { prisma } from "../../database/client";
 import { log } from "../../security/logger";
 
@@ -65,6 +66,20 @@ export function createEmailTool(provider: EmailProvider = createDefaultEmailProv
           status: "CONFIGURATION_REQUIRED",
           message: `CONFIGURATION_REQUIRED: no credentials configured for the "${provider.name}" email provider (see .env.example).`,
         };
+      }
+
+      // Phase 7.1 (items 2-3): a follow-up task calls this SAME tool tagged
+      // toolName:"email" with no explicit action - core/worker/index.ts
+      // passes only {taskId} (the worker never knows about follow-ups).
+      // Resolve the FollowUp row by taskId, re-check every cancellation
+      // condition against the LATEST CRM state, and only then fall through
+      // to the exact same "send" handler below with the content captured at
+      // scheduling time - NOT a second sender, no bypass of any check below.
+      if (!action && typeof input.taskId === "string") {
+        const followUp = await prisma.followUp.findUnique({ where: { taskId: input.taskId } });
+        if (followUp) {
+          return handleFollowUpDispatch(provider, followUp);
+        }
       }
 
       if (action === "list") {
@@ -119,6 +134,66 @@ async function handleDraft(input: Record<string, unknown>): Promise<ToolResult> 
   return { status: "OK", message: "Draft generated.", data: { draft, grounding } };
 }
 
+/**
+ * Phase 7.1 (items 2-3): the follow-up pre-check + dispatch. Runs BEFORE
+ * anything in handleSend() - if any cancellation condition is true, the
+ * FollowUp transitions SCHEDULED -> CANCELLED with a clear reason and the
+ * real provider is never reached (handleSend() itself is not even called).
+ * Otherwise it calls
+ * handleSend() with the content captured at scheduling time, then records
+ * the outcome back onto the FollowUp row (EXECUTED on a real send;
+ * otherwise left SCHEDULED so a legitimate BLOCKED outcome - e.g. a fresh
+ * suppression, a new HIGH-risk approval requirement - can still be resolved
+ * and retried through the normal task-retry/approval mechanisms rather than
+ * being permanently abandoned).
+ */
+async function handleFollowUpDispatch(
+  provider: EmailProvider,
+  followUp: { id: string; leadId: string | null; contactId: string | null; subject: string; body: string; createdAt: Date; taskId: string | null }
+): Promise<ToolResult> {
+  const guard = await isFollowUpAllowed({
+    taskId: followUp.taskId ?? "",
+    contactId: followUp.contactId,
+    leadId: followUp.leadId,
+    sinceTaskCreatedAt: followUp.createdAt,
+  });
+
+  if (!guard.allowed) {
+    await prisma.followUp.update({
+      where: { id: followUp.id },
+      data: { status: "CANCELLED", cancelReason: guard.reason ?? "Cancellation condition met." },
+    });
+    log("BUSINESS", "followUp.cancelled", { followUpId: followUp.id, reason: guard.reason });
+    return { status: "BLOCKED", message: `Follow-up ${followUp.id} cancelled: ${guard.reason}`, data: { followUpId: followUp.id, cancelled: true } };
+  }
+
+  let contactEmail: string | null | undefined;
+  if (followUp.contactId) {
+    contactEmail = (await prisma.contact.findUnique({ where: { id: followUp.contactId } }))?.email;
+  }
+  if (!contactEmail) {
+    await prisma.followUp.update({ where: { id: followUp.id }, data: { status: "CANCELLED", cancelReason: "No resolvable contact email." } });
+    return { status: "BLOCKED", message: `Follow-up ${followUp.id} cancelled: no resolvable contact email.`, data: { followUpId: followUp.id, cancelled: true } };
+  }
+
+  const result = await handleSend(provider, {
+    action: "send",
+    to: contactEmail,
+    subject: followUp.subject,
+    body: followUp.body,
+    taskId: followUp.taskId,
+    contactId: followUp.contactId,
+  });
+
+  if (result.status === "OK") {
+    await prisma.followUp.update({ where: { id: followUp.id }, data: { status: "EXECUTED" } });
+  }
+  // Any other outcome (BLOCKED by suppression/anti-spam/approval, CONFIGURATION_REQUIRED,
+  // ERROR) leaves the FollowUp row as SCHEDULED - it remains resolvable/retryable
+  // via the underlying task-retry or approval-decision path, not silently abandoned.
+  return result;
+}
+
 async function handleSend(provider: EmailProvider, input: Record<string, unknown>): Promise<ToolResult> {
   const to = typeof input.to === "string" ? input.to.trim() : "";
   const subject = typeof input.subject === "string" ? input.subject : "";
@@ -167,7 +242,7 @@ async function handleSend(provider: EmailProvider, input: Record<string, unknown
         row
           ? {
               id: row.id,
-              status: row.status as "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED",
+              status: row.status as "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "REVOKED",
               action: row.action,
               reason: row.reason,
               target: row.target,
@@ -186,6 +261,23 @@ async function handleSend(provider: EmailProvider, input: Record<string, unknown
             }
           : null
       );
+    }
+
+    // Phase 7.1 hardening (item 6): an APPROVED record is only valid for
+    // THIS exact send - verify it, never trust the caller's approvalRequestId
+    // input beyond "which row to look up." A caller-forged id that resolves
+    // to someone else's approved request (different target/action), or a
+    // real approval that has since gone stale (expiresAt passed - checked
+    // here, not just at creation/decision time), is treated as absent.
+    if (approval && approval.status === "APPROVED") {
+      if (approval.action !== "email.send" || approval.target !== to) {
+        log("SECURITY", "email.approval_target_mismatch", { to, approvalRequestId: approval.id, approvalTarget: approval.target, approvalAction: approval.action });
+        approval = null;
+      } else if (approval.expiresAt && approval.expiresAt.getTime() < Date.now()) {
+        await prisma.approvalRequest.update({ where: { id: approval.id }, data: { status: "EXPIRED" } }).catch(() => undefined);
+        log("SECURITY", "email.approval_expired_at_send", { to, approvalRequestId: approval.id });
+        approval = null;
+      }
     }
 
     if (!approval || approval.status !== "APPROVED") {
@@ -215,7 +307,21 @@ async function handleSend(provider: EmailProvider, input: Record<string, unknown
     // approval.status === "APPROVED": proceed to send below.
   }
 
-  // 5/6. Send via the provider - the only real network call this tool makes.
+  // 5/6. Atomically reserve the idempotency key BEFORE the real provider is
+  // ever called (item 7 hardening) - closes a true-concurrency race that
+  // step 3's plain read cannot: two simultaneous calls with the identical
+  // idempotencyKey can both pass checkIdempotency() above, but only one can
+  // win this DB-unique-constrained insert. The loser never reaches the
+  // provider and reports the winner's outcome instead.
+  const reservation = await reserveIdempotencyKey({ idempotencyKey, taskId, contactId });
+  if (!reservation.reserved) {
+    return {
+      status: "OK",
+      message: "This exact send is already in flight or completed (idempotent) - not sending again.",
+      data: { idempotencyKey, providerMessageId: reservation.existing?.providerMessageId, deduplicated: true },
+    };
+  }
+
   const result = await provider.sendMessage({ to: [to], subject, body, idempotencyKey });
   if ("code" in result) {
     await recordSendAttempt({ idempotencyKey, taskId, contactId, status: "FAILED" });

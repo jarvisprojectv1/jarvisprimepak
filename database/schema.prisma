@@ -713,6 +713,43 @@ model SuppressedContact {
   @@map("suppressed_contacts")
 }
 
+// Phase 7.1 (hardening, items 2-5): a real, persisted follow-up - one row per
+// scheduled step in a lead/contact's follow-up sequence. `leadId +
+// sequenceStep` is the natural idempotency key for "this specific follow-up
+// in this specific sequence" (a DB unique constraint, distinct from the
+// email-send-level idempotencyKey in OutboundSendLog/Email, which is keyed
+// off taskId + contact + content hash - belt-and-suspenders, not a
+// replacement). `subject`/`body` are captured at SCHEDULING time (via the
+// same deterministic core/business/emailDraft.ts template generator every
+// other draft uses - never invented at send time), so the send itself only
+// ever re-validates cancellation conditions and re-runs the full
+// suppression/anti-spam/idempotency/risk/approval pipeline inside
+// tools/email/emailTool.ts's existing `send` action - no second sender.
+model FollowUp {
+  id            String    @id @default(uuid())
+  leadId        String?
+  contactId     String?
+  sequenceStep  Int       @default(1)
+  subject       String
+  body          String
+  scheduledFor  DateTime
+  // SCHEDULED | CANCELLED | EXECUTED | SKIPPED (application-validated, same
+  // "SQLite has no enums" convention as every other status field here).
+  status        String    @default("SCHEDULED")
+  cancelReason  String?
+  // The Task row that will (or did) execute this follow-up, tagged
+  // toolName:"email" so the worker calls the SAME guarded email tool every
+  // other send goes through. Unique: at most one Task per FollowUp, set
+  // exactly once by the dispatch pass (core/business/followUp.ts).
+  taskId        String?   @unique
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([leadId, sequenceStep])
+  @@index([status, scheduledFor])
+  @@map("follow_ups")
+}
+
 // One row per outbound send ATTEMPT (not per successful send) - the
 // idempotency ledger (item 18). idempotencyKey is derived from
 // hash(taskId + contentHash) by core/business/idempotency.ts; a unique
@@ -724,7 +761,13 @@ model OutboundSendLog {
   taskId            String?
   contactId         String?
   emailId           String?
-  status            String // SENT | FAILED | BLOCKED
+  // SENDING | SENT | FAILED | BLOCKED - SENDING is a Phase 7.1 addition: the
+  // atomic-reservation row inserted by core/business/idempotency.ts's
+  // reserveIdempotencyKey() the instant BEFORE the real provider call, so
+  // the unique constraint on idempotencyKey (not an in-memory lock) is what
+  // makes two truly-concurrent identical sends resolve to exactly one real
+  // provider call.
+  status            String // SENDING | SENT | FAILED | BLOCKED
   providerMessageId String?
   createdAt         DateTime @default(now())
 

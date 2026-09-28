@@ -68,7 +68,14 @@ async function markTerminal(
 export async function processClaimedTask(task: PlannedTask, retryLimit: number): Promise<TaskOutcome> {
   try {
     if (task.toolName) {
-      const result = await toolRegistry.execute(task.toolName, {}, WORKER_IDENTITY);
+      // Phase 7.1 hardening: pass the task's own id through as `taskId` (was
+      // an unconditional `{}` before - every existing toolName-tagged tool,
+      // e.g. tools/reports.ts, ignores unknown input keys, so this is
+      // additive). This lets a tool derive task-specific context it has no
+      // other way to reach here - e.g. tools/email/emailTool.ts looks up a
+      // FollowUp row by taskId for a follow-up dispatch task, still going
+      // through this exact same guarded call.
+      const result = await toolRegistry.execute(task.toolName, { taskId: task.id }, WORKER_IDENTITY);
       if (result.status === "OK") return markTerminal(task, "DONE", result.message, retryLimit);
       if (result.status === "NOT_IMPLEMENTED" || result.status === "CONFIGURATION_REQUIRED") {
         return markTerminal(task, "WAITING", `Tool "${task.toolName}" not usable yet: ${result.message}`, retryLimit);
