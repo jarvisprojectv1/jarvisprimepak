@@ -9,6 +9,7 @@ import { emailTool } from "./email";
 import { calendarTool } from "./calendar";
 import { voiceTool } from "./voice";
 import { webTool } from "./web";
+import { reportsTool } from "./reports";
 
 let registered = false;
 
@@ -22,6 +23,7 @@ export function registerBuiltinTools(): void {
     calendarTool,
     voiceTool,
     webTool,
+    reportsTool,
   ]) {
     if (!toolRegistry.get(tool.name)) {
       toolRegistry.register(tool);

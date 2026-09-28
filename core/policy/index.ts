@@ -106,6 +106,7 @@ const AUTONOMOUS_NAMES = new Set([
   "system", // system agent (read-only health/state queries)
   "files", // internal data organization (sandboxed)
   "web", // read-only research/search
+  "reports", // Phase 5: daily executive report generation (read-only aggregation)
   "reports.generate",
   "reports.scheduled",
   "crm.read",

@@ -4,9 +4,10 @@
 // agent) instead of the Brain calling core/planner directly.
 import type { AgentInterface, AgentRunResult, AgentStatus } from "./types";
 import { planTask, updateTaskStatus, listTasks, type TaskStatus } from "../core/planner";
+import { spawnChildTask } from "../core/worker/spawn";
 import { log } from "../security/logger";
 
-type TaskAgentAction = "create" | "update_status" | "list";
+type TaskAgentAction = "create" | "update_status" | "list" | "create_child";
 
 export class TaskAgent implements AgentInterface {
   name = "task";
@@ -56,6 +57,36 @@ export class TaskAgent implements AgentInterface {
             result: { task },
             evidence: { taskId: task.id, status: task.status },
           };
+          break;
+        }
+        case "create_child": {
+          // Phase 5 (#10): a genuine follow-up task, e.g. "verify company
+          // information", with hard-enforced limits (max children/parent,
+          // max recursion depth, max tree size, duplicate detection) - see
+          // core/worker/spawn.ts. Never fabricates success on rejection.
+          const parentId = typeof input.parentId === "string" ? input.parentId : undefined;
+          const title = typeof input.title === "string" ? input.title : undefined;
+          if (!parentId || !title) {
+            result = { status: "FAILED", summary: "Both 'parentId' and 'title' are required to create a child task." };
+            break;
+          }
+          const spawnResult = await spawnChildTask({
+            parentId,
+            title,
+            description: typeof input.description === "string" ? input.description : undefined,
+            priority: input.priority as never,
+          });
+          if (!spawnResult.created) {
+            result = { status: "FAILED", summary: `Child task rejected: ${spawnResult.reason}`, errors: [spawnResult.reason ?? "rejected"] };
+          } else {
+            result = {
+              status: "SUCCESS",
+              summary: `Created follow-up task "${title}" under ${parentId}.`,
+              data: { task: spawnResult.task },
+              result: { task: spawnResult.task },
+              evidence: { taskId: spawnResult.task!.id },
+            };
+          }
           break;
         }
         case "list":
