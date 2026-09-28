@@ -29,6 +29,10 @@ export interface TaskInput {
   dueAt?: Date;
   ownerId?: string;
   subtasks?: string[]; // titles of naive, flat subtasks
+  /** Phase 4: when this task originates from a validated Brain Plan step. */
+  stepId?: string;
+  agentName?: string;
+  toolName?: string;
 }
 
 export interface PlannedTask {
@@ -40,6 +44,9 @@ export interface PlannedTask {
   retryCount: number;
   parentId: string | null;
   dueAt: Date | null;
+  stepId: string | null;
+  agentName: string | null;
+  toolName: string | null;
   createdAt: Date;
 }
 
@@ -52,6 +59,9 @@ function toPlannedTask(row: {
   retryCount?: number;
   parentId: string | null;
   dueAt: Date | null;
+  stepId?: string | null;
+  agentName?: string | null;
+  toolName?: string | null;
   createdAt: Date;
 }): PlannedTask {
   return {
@@ -63,6 +73,9 @@ function toPlannedTask(row: {
     retryCount: row.retryCount ?? 0,
     parentId: row.parentId,
     dueAt: row.dueAt,
+    stepId: row.stepId ?? null,
+    agentName: row.agentName ?? null,
+    toolName: row.toolName ?? null,
     createdAt: row.createdAt,
   };
 }
@@ -79,6 +92,9 @@ export async function planTask(input: TaskInput): Promise<PlannedTask[]> {
       priority: input.priority ?? "NORMAL",
       dueAt: input.dueAt,
       ownerId: input.ownerId,
+      stepId: input.stepId,
+      agentName: input.agentName,
+      toolName: input.toolName,
     },
   });
 
@@ -130,6 +146,42 @@ export async function updateTaskStatus(
   const row = await prisma.task.update({ where: { id }, data: { status } });
   log("ACTION", "planner.status_change", { taskId: id, status });
   return toPlannedTask(row);
+}
+
+/**
+ * Phase 4: creates real Task rows from a validated Brain Plan
+ * (core/brain/plan.ts) - one parent task for the goal, one subtask per step,
+ * each subtask tagged with its stepId/agentName/toolName so the Brain can
+ * map execution results back to plan steps. The caller (core/brain) is
+ * responsible for validating the Plan BEFORE calling this - this function
+ * does not re-validate step shape, only persists it.
+ */
+export async function planFromPlan(plan: {
+  goal: string;
+  steps: Array<{ stepId: string; description: string; agent?: string; tool?: string }>;
+}): Promise<{ parent: PlannedTask; subtasks: PlannedTask[] }> {
+  const parent = await prisma.task.create({
+    data: { title: plan.goal, description: `Brain-generated plan with ${plan.steps.length} step(s).` },
+  });
+
+  const subtasks: PlannedTask[] = [];
+  for (const step of plan.steps) {
+    const sub = await prisma.task.create({
+      data: {
+        title: step.description,
+        parentId: parent.id,
+        stepId: step.stepId,
+        agentName: step.agent,
+        toolName: step.tool,
+      },
+    });
+    subtasks.push(toPlannedTask(sub));
+  }
+
+  log("ACTION", "planner.plan_from_plan", { taskId: parent.id, stepCount: subtasks.length });
+  await publish({ type: "task.created", payload: { taskId: parent.id, title: plan.goal }, source: "brain" });
+
+  return { parent: toPlannedTask(parent), subtasks };
 }
 
 export async function listTasks(parentId?: string | null): Promise<PlannedTask[]> {
