@@ -1,0 +1,48 @@
+# deploy/systemd/jarvis-api.service - Phase 12 (item 5): process supervision
+# via systemd, for a bare-metal/VM deployment without Docker.
+#
+# Same honesty note as deploy/docker-compose.yml: this supervises the ONE
+# process that runs the API + Autonomous Worker + Scheduler together
+# (apps/api/src/index.ts) - there is no separate worker/scheduler unit to
+# define, because no separate worker/scheduler process exists in this
+# codebase.
+#
+# Install:
+#   sudo cp deploy/systemd/jarvis-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jarvis-api
+# Edit User/WorkingDirectory/the .env path below for your host before
+# installing - the values here are placeholders, not real deployment
+# secrets.
+[Unit]
+Description=JARVIS API + Autonomous Worker + Scheduler (Prime Pak Packages)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+WorkingDirectory=/opt/jarvis
+EnvironmentFile=/opt/jarvis/.env
+Environment=NODE_ENV=production
+ExecStartPre=/usr/bin/npx prisma migrate deploy --schema=database/schema.prisma
+ExecStart=/usr/bin/npm run start -w apps/api
+Restart=on-failure
+RestartSec=5
+# A crash loop (5 restarts within 300s, per StartLimit* above) stops
+# systemd's own retries - core/worker/watchdog.ts's bounded backoff-then-
+# give-up policy is the IN-PROCESS analog of this same "never restart
+# forever" discipline, at a different layer.
+TimeoutStopSec=30
+
+# Hardening (does not weaken anything this codebase's own enforcement does -
+# purely OS-level sandboxing of the process).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/jarvis/database /opt/jarvis/data
+
+[Install]
+WantedBy=multi-user.target

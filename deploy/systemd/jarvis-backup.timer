@@ -1,0 +1,14 @@
+# deploy/systemd/jarvis-backup.timer - daily backup, per
+# jarvis-backup.service. Install + enable:
+#   sudo cp deploy/systemd/jarvis-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jarvis-backup.timer
+[Unit]
+Description=Daily JARVIS database backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

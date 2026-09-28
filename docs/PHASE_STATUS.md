@@ -816,3 +816,87 @@ DEFERRED (honestly, not silently) — see docs/PHASE11_BUSINESS_INTELLIGENCE.md
   these), a dedicated Business-Assumptions/Experiment tracking entity, a
   Knowledge Graph, and a Dashboard UI were all deferred as lower priority
   per this phase's own triage instruction.
+
+PHASE 12 UPDATE (PRODUCTION INTEGRATION, RELIABILITY, OBSERVABILITY &
+DEPLOYMENT) - see docs/PHASE12_PRODUCTION.md for the full, evidence-based
+writeup; summary below.
+
+NEWLY IMPLEMENTED
+- config/providers.ts: honest provider-configuration classification
+  (CONFIGURED/OPTIONAL/CONFIGURATION_REQUIRED/INVALID) for all six external
+  integrations, from real env-var presence only - never a live credential
+  check, and never a fabricated "REAL" status.
+- core/health/index.ts + apps/api/src/routes/health.ts: new GET /health/live
+  (liveness) and GET /health/ready (DB connectivity + provider summary, 503
+  on DB failure) - additive; the pre-existing GET /health and GET
+  /system/health are unchanged.
+- security/context.ts + apps/api/src/middleware/requestContext.ts: a
+  request/correlation id on every request, threaded into security/logger.ts
+  (console + persisted SystemLog rows) and echoed back as X-Request-Id.
+  core/production/errors.ts: an honest error classification scheme
+  (CLIENT_ERROR/CONFIGURATION_REQUIRED/TRANSIENT/POLICY_BLOCKED/
+  AUTH_FAILURE/INTERNAL) plus isRetryableOutcomeStatus(), documenting -
+  never overriding - core/worker/index.ts's existing "only FAILED retries"
+  behavior.
+- apps/api/src/middleware/rateLimit.ts: per-IP rate limiting on the public
+  webhook endpoints (POST/GET /webhooks/whatsapp, /webhooks/voice) - the
+  only unauthenticated-by-session routes, which previously had no
+  request-volume protection.
+- apps/api/src/middleware/enforceHttps.ts: optional, off-by-default HTTPS
+  enforcement (FORCE_HTTPS + TRUST_PROXY_HOPS env vars).
+- scripts/backup-db.sh, scripts/restore-db.sh: a real backup/restore cycle,
+  integrity-checked, proven end-to-end (real data survives a real
+  destroy-and-restore) by core/production/backupRestore.test.ts.
+- scripts/deploy.sh, scripts/rollback.sh, scripts/smoke-test.sh: real,
+  runnable deployment/rollback/smoke-test scripts - smoke-test.sh was
+  executed against a live running instance during this phase's own
+  verification and passed.
+- Dockerfile, apps/web/Dockerfile, deploy/docker-compose.yml,
+  deploy/systemd/jarvis-api.service (+ jarvis-backup.service/.timer),
+  deploy/pm2/ecosystem.config.js: process supervision configs, honestly
+  modeling this codebase's ACTUAL single-process (API+worker+scheduler
+  together) topology rather than a fabricated multi-service one. No
+  Kubernetes, per this phase's instruction.
+- docs/RUNBOOK_OPERATOR.md, docs/RUNBOOK_PROVIDERS.md: operator and
+  provider-configuration runbooks, variable names only, no real secrets.
+- 38 new tests across config/providers.test.ts,
+  core/production/{backupRestore,duplicationPrevention,retryPolicy,chaos,
+  safetyRegression}.test.ts, and apps/api/tests/production.test.ts (698 ->
+  736 total, all passing). Root and apps/api typechecks both clean.
+  git diff --stat against the pre-Phase-12 commit for core/enforcement/,
+  tools/registry.ts, agents/registry.ts, core/business/browserPolicy.ts,
+  core/whatsapp/webhook.ts, core/voice/webhook.ts, core/auth/session.ts,
+  core/auth/identity.ts, and core/authz/ all show ZERO diff. Provider
+  call-site grep (provider.sendMessage(/provider.createCall(, excluding
+  comments) confirms exactly 3, unchanged.
+
+DATABASE DECISION (item 3): SQLite is KEPT, not migrated to PostgreSQL -
+the Autonomous Worker's own maxWorkers=2 in-process concurrency, the
+single-process deployment topology this phase's own supervision configs
+enforce, and Prime Pak's actual (SME-scale) traffic volume give no evidence
+a migration is justified yet. Full tradeoff writeup, and the concrete
+trigger for revisiting this, in docs/PHASE12_PRODUCTION.md.
+
+SECURITY/DEPENDENCY AUDIT (item 15): npm audit found 11 vulnerabilities (7
+moderate, 3 high, 1 critical) - reported honestly, none silently ignored.
+All are in dev/build tooling (vitest/vite/esbuild) or the explicitly
+unlaunched apps/desktop Electron stub, except react-router/react-router-dom
+(apps/web, moderate open-redirect) and uuid-via-node-cron (moderate,
+production scheduler dependency) - both flagged as follow-up work rather
+than force-upgraded mid-phase (each fix is a breaking major-version bump
+needing its own regression pass).
+
+PRODUCTION READINESS SELF-CLASSIFICATION: LEVEL 1 of 4 (deployable with
+real health checks/backups/supervision/disclosed limits) - explicitly NOT
+LEVEL 2+ because no provider credential was live-tested in this
+environment, the system is not horizontally scalable (SQLite single-writer,
+by design), and no long-running soak test was performed. Full,
+itemized justification in docs/PHASE12_PRODUCTION.md.
+
+DEFERRED (honestly, not silently) - see docs/PHASE12_PRODUCTION.md
+- Live credential verification for any provider (no real credentials were
+  available in this environment), a PostgreSQL migration (not yet
+  justified - see above), horizontal scaling / multi-instance safety, a
+  shared (non-in-memory) rate-limit store, and force-upgrading the 11
+  audited dependency vulnerabilities (each requires its own regression
+  pass) were all deferred as out of this phase's honest scope.

@@ -1,0 +1,13 @@
+# deploy/systemd/jarvis-backup.service - runs scripts/backup-db.sh once,
+# triggered by the companion jarvis-backup.timer. Install alongside
+# jarvis-api.service.
+[Unit]
+Description=JARVIS database backup (scripts/backup-db.sh)
+
+[Service]
+Type=oneshot
+User=jarvis
+Group=jarvis
+WorkingDirectory=/opt/jarvis
+EnvironmentFile=/opt/jarvis/.env
+ExecStart=/opt/jarvis/scripts/backup-db.sh /opt/jarvis/backups

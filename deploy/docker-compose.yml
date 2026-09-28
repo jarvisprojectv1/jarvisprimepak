@@ -1,0 +1,62 @@
+# deploy/docker-compose.yml - Phase 12 (item 5): process supervision via
+# Docker Compose's own container restart policy (no Kubernetes, per this
+# phase's explicit instruction).
+#
+# ONE application service, honestly, not three: see Dockerfile's header
+# comment - apps/api/src/index.ts already runs the HTTP API, the Autonomous
+# Worker loop, and the Scheduler in a single Node process. `restart: always`
+# is Compose's own supervision - if the process crashes or the container
+# exits, Docker restarts it; this is IN ADDITION TO, not a replacement for,
+# core/worker/watchdog.ts's in-process watchdog (which recovers a hung tick
+# loop without needing a full process restart at all).
+#
+# `web` is optional - the React dashboard, served as a static build via a
+# tiny preview server. Most operators will instead deploy apps/web's static
+# `dist/` output to any static host/CDN; this service exists for a
+# single-command, all-in-one deployment.
+#
+# SQLite caveat (see docs/PHASE12_PRODUCTION.md "Database" section for the
+# full honest writeup): this compose file intentionally runs exactly ONE
+# `app` replica. SQLite's single-writer model means running `docker compose
+# up --scale app=N` for N>1 against the SAME database file is NOT safe -
+# do not scale this service without first migrating to PostgreSQL.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "${PORT:-4000}:4000"
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=file:/data/jarvis.db
+    volumes:
+      # The SQLite file lives on a named volume, NOT inside the container
+      # layer - so `docker compose down` (without -v) never destroys data,
+      # and scripts/backup-db.sh can be pointed at this same file from the
+      # host (or run inside the container via `docker compose exec`).
+      - jarvis-db:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/health/ready',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: always
+    ports:
+      - "${WEB_PORT:-5173}:4173"
+    depends_on:
+      - app
+    profiles:
+      - with-web
+
+volumes:
+  jarvis-db:
