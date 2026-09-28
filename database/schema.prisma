@@ -63,6 +63,21 @@ model Contact {
   title     String?
   companyId String?
   notes     String?
+  // Phase 7 (Email & CRM): normalized (lowercase, trimmed) email used for
+  // dedup matching - see core/crm/dedup.ts. Kept separate from `email` (the
+  // display value) so dedup never depends on formatting.
+  normalizedEmail String?
+  // Phase 7: true when create/update matched an existing row ambiguously
+  // (e.g. same name, different email) - never auto-merged, flagged for a
+  // human to resolve. Never silently set back to false except by an explicit
+  // dedup-resolution action.
+  possibleDuplicate Boolean  @default(false)
+  // Phase 7 anti-spam (item 17): hard suppression flag checked BEFORE outbound
+  // risk classification even runs - see core/business/antiSpam.ts. Distinct
+  // from the SuppressedContact table (which tracks WHY/WHEN), so a single
+  // boolean read is enough on the hot path.
+  unsubscribed    Boolean   @default(false)
+  lastContactedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -72,6 +87,7 @@ model Contact {
   calls          Call[]
   emails         Email[]
 
+  @@index([normalizedEmail])
   @@map("contacts")
 }
 
@@ -83,6 +99,10 @@ model Company {
   phone     String?
   address   String?
   notes     String?
+  // Phase 7: normalized domain (lowercase host, no "www."/protocol) derived
+  // from `website` - see core/crm/dedup.ts. Used for company-domain matching.
+  domain    String?
+  possibleDuplicate Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -92,6 +112,7 @@ model Company {
   quotes   Quote[]
   orders   Order[]
 
+  @@index([domain])
   @@map("companies")
 }
 
@@ -104,15 +125,30 @@ model Lead {
   companyId  String?
   contactId  String?
   source     String? // e.g. "manual", "web-form", "cold-call" (Phase 2+)
-  status     String   @default("NEW") // NEW | CONTACTED | QUALIFIED | WON | LOST
+  // Phase 7 (Email & CRM, item 6): extended pipeline, application-validated
+  // (see core/crm/pipeline.ts) - SQLite has no enums, same convention as
+  // every other status field in this schema:
+  // NEW | RESEARCHING | QUALIFIED | CONTACTED | RESPONDED | SAMPLE_REQUESTED |
+  // QUOTING | NEGOTIATION | WON | LOST | NURTURE
+  status     String   @default("NEW")
   value      Float?
   notes      String?
+  possibleDuplicate Boolean @default(false)
+  // Phase 7 (item 9): a lead created FROM research carries a real
+  // ResearchRun reference - never a fabricated company/contact. Nullable:
+  // most leads are still manually/CRM-created and have no research origin.
+  researchRunId String?
+  // Phase 7 (item 10): last qualification result, application-validated
+  // JSON ({ qualified: true|false|"UNKNOWN", reasons: string[], scoredAt }) -
+  // see core/crm/qualification.ts. Never a bare opaque number.
+  qualification String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   company Company? @relation(fields: [companyId], references: [id])
   contact Contact? @relation(fields: [contactId], references: [id])
 
+  @@index([researchRunId])
   @@map("leads")
 }
 
@@ -141,10 +177,21 @@ model Communication {
   channel   String // email | call | sms | whatsapp | chat
   direction String // inbound | outbound
   summary   String?
+  // Phase 7 (item 19): activity type for CRM activity-feed grouping,
+  // application-validated - NOTE | EMAIL_SENT | EMAIL_RECEIVED | CALL_LOGGED |
+  // STATUS_CHANGE | QUOTE_PREPARED | SAMPLE_REQUESTED | FOLLOW_UP |
+  // TASK_LINKED. Left nullable so every pre-Phase-7 row (channel/direction
+  // only) still reads back fine.
+  activityType String?
+  // Phase 7: id of the related Lead/Quote/Task this activity concerns, so an
+  // activity feed can be filtered per pipeline entity without a new table.
+  relatedEntityId String?
+  metadata  String? // JSON-encoded extra detail (never raw secrets)
   createdAt DateTime @default(now())
 
   contact Contact? @relation(fields: [contactId], references: [id])
 
+  @@index([relatedEntityId])
   @@map("communications")
 }
 
@@ -170,11 +217,38 @@ model Email {
   direction String // inbound | outbound
   subject   String?
   body      String?
-  status    String   @default("NOT_IMPLEMENTED") // NOT_IMPLEMENTED until Phase 2 email sending is wired
+  // Phase 7 (Email & CRM): real statuses once tools/email/ is configured -
+  // RECEIVED | DRAFT | REQUIRES_APPROVAL | SENDING | SENT | FAILED |
+  // BLOCKED | CONFIGURATION_REQUIRED. Default unchanged for backward
+  // compatibility with any pre-Phase-7 row.
+  status    String   @default("NOT_IMPLEMENTED")
+  // Phase 7 (item 5): the email provider's own message id - the natural key
+  // for idempotent upsert-by-provider-id (a retry must never duplicate the
+  // row this message already has). Nullable because a not-yet-sent DRAFT has
+  // no provider id yet.
+  providerMessageId String? @unique
+  threadId          String?
+  toAddress         String?
+  fromAddress       String?
+  // Phase 7 (item 13): deterministic pre-classification + optional
+  // AI-assisted classification result - see core/business/emailClassification.ts.
+  // Application-validated category string, never a free-form LLM action.
+  classification String?
+  classificationReasons String? // JSON array of strings - always paired with classification
+  // Phase 7 (item 16): the outbound risk classification this email was sent
+  // (or blocked) under - LOW | HIGH - see core/business/outboundPolicy.ts.
+  riskCategory String?
+  // Phase 7 (item 18): idempotency key checked before any real provider send
+  // - see core/business/idempotency.ts and the OutboundSendLog table.
+  idempotencyKey String? @unique
+  relatedLeadId  String?
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   contact Contact? @relation(fields: [contactId], references: [id])
 
+  @@index([threadId])
+  @@index([relatedLeadId])
   @@map("emails")
 }
 
@@ -199,9 +273,20 @@ model Quote {
   id        String   @id @default(uuid())
   clientId  String?
   companyId String?
-  status    String   @default("DRAFT") // DRAFT | SENT | ACCEPTED | REJECTED
+  // Phase 7 (item 21): extended - DRAFT | REQUIRES_APPROVAL | SENT | ACCEPTED
+  // | REJECTED. A quote may ONLY move DRAFT -> REQUIRES_APPROVAL -> SENT via
+  // an OWNER-approved ApprovalRequest (core/approvals) - never autonomously.
+  // See core/business/quote.test.ts / agents/no-autonomous-quote-send.test.ts.
+  status    String   @default("DRAFT")
   total     Float?
+  // Phase 7: true only if `total` was computed from configured costing rules
+  // (core/crm/businessConfig.ts) - never fabricated pricing. When false and
+  // total is null, the quote is a spec collection awaiting owner input.
+  totalIsComputed Boolean  @default(false)
+  approvalRequestId String?
+  sentAt            DateTime?
   lineItems String? // JSON-encoded array; kept simple for Phase 1
+  leadId    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -607,6 +692,91 @@ model SkillCandidate {
   updatedAt          DateTime @updatedAt
 
   @@map("skill_candidates")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 (Email & CRM): outbound safety infrastructure.
+//
+// SuppressedContact is the durable, auditable record of WHY/WHEN a contact
+// was suppressed (unsubscribe, hard bounce, manual owner action) -
+// Contact.unsubscribed is the fast boolean read on the hot send path, this
+// table is the record of truth behind it. Checked BEFORE outbound risk
+// classification even runs - see core/business/antiSpam.ts.
+// ---------------------------------------------------------------------------
+model SuppressedContact {
+  id                String   @id @default(uuid())
+  normalizedEmail   String   @unique
+  reason            String // UNSUBSCRIBE | BOUNCE | MANUAL | COMPLAINT
+  contactId         String?
+  createdAt         DateTime @default(now())
+
+  @@map("suppressed_contacts")
+}
+
+// One row per outbound send ATTEMPT (not per successful send) - the
+// idempotency ledger (item 18). idempotencyKey is derived from
+// hash(taskId + contentHash) by core/business/idempotency.ts; a unique
+// constraint here is what makes a retried task provably unable to
+// double-send, not just "unlikely to."
+model OutboundSendLog {
+  id                String   @id @default(uuid())
+  idempotencyKey    String   @unique
+  taskId            String?
+  contactId         String?
+  emailId           String?
+  status            String // SENT | FAILED | BLOCKED
+  providerMessageId String?
+  createdAt         DateTime @default(now())
+
+  @@map("outbound_send_log")
+}
+
+// Phase 7 (item 26): the Owner Approval Queue. Approving/rejecting NEVER
+// mutates proposedContent - see core/approvals/index.ts. Every decision is
+// audited via the normal security/audit.ts path (the approve/reject HTTP
+// routes call writeAuditLog like every other authenticated write).
+model ApprovalRequest {
+  id                  String    @id @default(uuid())
+  action              String // e.g. "email.send", "quote.send"
+  reason              String
+  target              String // e.g. a Contact/Company/Lead id, human-readable in `target`
+  proposedContent     String // JSON-encoded, e.g. { subject, body, to } - immutable once created
+  supportingContext   String? // JSON-encoded (CRM context, research refs, etc.)
+  riskClassification  String // HIGH | CRITICAL (only HIGH-risk-or-above actions ever reach this queue)
+  taskId              String?
+  idempotencyKey      String?   @unique
+  status              String    @default("PENDING") // PENDING | APPROVED | REJECTED | EXPIRED
+  createdBy           String // Identity label
+  decidedBy           String?
+  decidedAt           DateTime?
+  decisionNote        String?
+  expiresAt           DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([status])
+  @@index([taskId])
+  @@map("approval_requests")
+}
+
+// Phase 7 (item 11): Prime Pak's product categories/positioning as DATA,
+// never hardcoded business claims in TypeScript. Draft generation
+// (core/business/emailDraft.ts) and quote preparation (core/business/quote.ts)
+// may ONLY cite facts present in this table (or explicit config rows) -
+// anything else becomes a placeholder in a draft/quote, never an invention.
+model ProductCategory {
+  id                    String   @id @default(uuid())
+  name                  String   @unique
+  description           String?
+  positioning           String?
+  certifications        String? // JSON array of strings
+  minOrderQuantity      String?
+  productionTimeNotes   String?
+  costingRulesJson      String? // JSON: { unit, baseUnitCost, currency } - only used if present
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("product_categories")
 }
 
 // ---------------------------------------------------------------------------

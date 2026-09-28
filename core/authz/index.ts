@@ -44,7 +44,14 @@ export type AuthzAction =
   | "research.write"
   | "skills.read"
   | "skills.write"
-  | "skills.activate";
+  | "skills.activate"
+  // Phase 7 (Email & CRM) - additive only.
+  | "crm.read"
+  | "crm.write"
+  | "email.read"
+  | "email.send"
+  | "approval.read"
+  | "approval.decide";
 
 export interface AuthzResult {
   allowed: boolean;
@@ -75,10 +82,38 @@ const ROLE_ACTIONS: Record<IdentityKind, Set<AuthzAction> | "ALL"> = {
     "research.write",
     "skills.read",
     "skills.write",
+    "crm.read",
+    "crm.write",
+    "email.read",
+    "email.send",
+    "approval.read",
   ]),
-  AGENT: new Set<AuthzAction>(["tool.execute", "memory.read", "memory.write", "task.write", "task.read"]),
-  SERVICE: new Set<AuthzAction>(["tool.execute", "memory.read", "task.read", "research.read", "research.write"]),
+  AGENT: new Set<AuthzAction>([
+    "tool.execute",
+    "memory.read",
+    "memory.write",
+    "task.write",
+    "task.read",
+    "crm.read",
+    "crm.write",
+    "email.read",
+    "email.send",
+  ]),
+  SERVICE: new Set<AuthzAction>([
+    "tool.execute",
+    "memory.read",
+    "task.read",
+    "research.read",
+    "research.write",
+    "crm.read",
+    "email.read",
+  ]),
 };
+// Note: "approval.decide" is intentionally granted to no role here except
+// OWNER (via the "ALL" table above) - core/approvals routes additionally
+// enforce requireAuthz("approval.decide"), so even a future bug widening
+// SYSTEM/AGENT/SERVICE's table would still need this action added
+// explicitly, and a request-review shows exactly that diff.
 
 const ALL_ACTIONS: AuthzAction[] = [
   "system.emergency_stop",
@@ -107,6 +142,12 @@ const ALL_ACTIONS: AuthzAction[] = [
   "skills.read",
   "skills.write",
   "skills.activate",
+  "crm.read",
+  "crm.write",
+  "email.read",
+  "email.send",
+  "approval.read",
+  "approval.decide",
 ];
 
 /**

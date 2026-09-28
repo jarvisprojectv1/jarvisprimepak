@@ -111,12 +111,14 @@ const AUTONOMOUS_NAMES = new Set([
   "reports.scheduled",
   "crm.read",
   "crm.update",
+  "crm.write",
   "maintenance.non_destructive",
   "data.organize",
 ]);
 
 const NOTIFY_NAMES = new Set([
   "email", // external communication
+  "email.send",
   "calendar", // touches external calendar invitees
   "voice", // telephony / calling
   "browser", // uncertain / open-ended web actions
