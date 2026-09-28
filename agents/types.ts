@@ -1,7 +1,13 @@
 // agents/types.ts - the AgentInterface every agent implements (spec section 26).
 import type { Identity } from "../core/auth/identity";
 
-export type AgentStatus = "IDLE" | "RUNNING" | "SUCCESS" | "FAILED" | "NOT_IMPLEMENTED";
+// Phase 6: WAITING added additively (a transient, retryable blocker - e.g. a
+// source temporarily unreachable) - distinct from NOT_IMPLEMENTED (a
+// capability that's genuinely not built/configured yet). Every existing
+// caller that switches over AgentStatus already has a default/else branch
+// (see core/worker/index.ts's processClaimedTask), so this is a pure
+// extension, not a breaking change.
+export type AgentStatus = "IDLE" | "RUNNING" | "SUCCESS" | "FAILED" | "NOT_IMPLEMENTED" | "WAITING";
 
 /**
  * Phase 4 (Brain & Memory) standardizes AgentRunResult to include `evidence`
