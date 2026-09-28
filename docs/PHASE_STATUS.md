@@ -438,7 +438,7 @@ NEWLY IMPLEMENTED
   core/conditions test for the daily-report rule) - 213/213 tests passing in
   total (up from 164/164 in Phase 4).
 
-WHAT SHOULD BE BUILT NEXT
+WHAT SHOULD BE BUILT NEXT (as of Phase 5)
 - Real event sources for the still-reserved categories (CRM/EMAIL/WEB/
   MARKET/VOICE/CALENDAR) - a genuine CRM webhook receiver would be the
   highest-leverage one, since the crm-new-hot-lead-research condition rule
@@ -451,3 +451,98 @@ WHAT SHOULD BE BUILT NEXT
   detection (carried over from Phase 3, still not addressed).
 - Real integrations behind the still-stubbed tools (email/calendar/web
   search/browser/computer/voice) - unchanged scope from Phases 1-4.
+
+================================================================================
+PHASE 6 UPDATE (WEB RESEARCH & AUTONOMOUS INTELLIGENCE) — see
+docs/PHASE6_WEB_RESEARCH.md for the full design note, the prompt-injection
+trust boundary, the provenance model, and an exhaustive real-vs-foundation-
+only breakdown. Summary:
+
+- New `tools/web/` package: a real `SearchProvider` interface with a real,
+  HTTP-backed `BraveSearchProvider` (UNTESTED against the live Brave API - no
+  credential available in this sandbox; carefully implemented from its
+  documented request/response shape, honestly flagged as such) and a real
+  `WebFetchTool`/`WebSearchTool` pair registered into the SAME
+  `toolRegistry`/enforcement gate as every other tool. Both honestly return
+  `CONFIGURATION_REQUIRED` with no credential, exactly like
+  `core/ai/provider.ts`'s pattern - `tools/web.ts` (the old permanent stub)
+  is left in place, unmodified.
+- `WebFetchTool` enforces: protocol allowlist, timeout, a hard redirect
+  limit, a streamed response-size cap, a content-type allowlist, dependency-
+  light HTML extraction (title/text, scripts/styles stripped, `<link
+  rel=canonical>` resolution), and honest `BLOCKED` on a 401/403/407/429 or
+  a bot-challenge-shaped page - it never attempts to bypass CAPTCHAs, login
+  walls, or anti-bot protections.
+- `core/research/trustBoundary.ts`: the prompt-injection defense. Every
+  piece of extracted web text is wrapped in an explicit
+  `EXTERNAL_WEB_CONTENT` delimiter block before it could ever reach an AI
+  provider prompt; a best-effort, LOG-ONLY (never blocking) pattern scan
+  flags obvious injection attempts for human review. The real guarantee is
+  architectural: even a "tricked" model can only ever propose a Plan step
+  naming a REGISTERED tool/agent, validated by `validatePlan()` and run
+  through the exact same enforcement gate - injected web content cannot
+  grant a new capability (tested directly in
+  `core/research/trustBoundary.test.ts`'s test N).
+- New Prisma models `ResearchRun`/`ResearchSource`/`ResearchEvidence`/
+  `ResearchTopic`/`SkillCandidate` (migration `phase6_web_research`) giving
+  real, queryable source provenance: Memory -> ResearchEvidence ->
+  ResearchSource -> ResearchRun is a real join chain
+  (`core/research/provenance.ts`), exposed via `GET
+  /research/provenance/:memoryId`.
+- `agents/research-agent.ts` upgraded: internal knowledge first, then real
+  web search/fetch only if configured, evidence classified
+  FACT/SOURCE_CLAIM/ANALYSIS/UNCERTAINTY (never auto-FACT from one source),
+  cross-source comparison surfaces conflicts rather than silently picking a
+  side, and Memory writes carry real source/confidence/provenance and use
+  `supersede()`.
+- `core/events/webEventSource.ts`: the `WEB` event category is now real (not
+  just reserved) - bounded, `ResearchTopic`-driven polling (never more than
+  once/hour/topic, enforced) that only ever calls `publish()`, never
+  executes a tool itself; a new `web-new-research-result` `ConditionRule`
+  turns a genuinely new result into a task, delegated to the (now
+  web-capable) research agent - the existing EVENT -> CONDITION -> TASK ->
+  AGENT pipeline, unmodified.
+- `agents/market-agent.ts`: forex/macro/gold/BTC research and monitoring
+  ONLY, built from the identical search/fetch plumbing as the research
+  agent. `agents/no-trading.test.ts` is a grep-based + registry-based
+  architectural proof that no trading/broker/order-placement/fund-movement
+  capability exists anywhere in the codebase.
+- `core/skills/` (Skill Discovery/Registry, FOUNDATION ONLY, by design): a
+  real lifecycle (`DISCOVERED -> CANDIDATE -> ANALYZING -> TESTING ->
+  VERIFIED -> ACTIVATABLE -> ACTIVE|REJECTED`) with real static analysis
+  (rejects `eval`/`new Function`/`child_process`/raw fs-or-network-module
+  patterns). `ACTIVATABLE` is the ceiling anything automatic can reach;
+  `ACTIVE` is OWNER-only, never automatic, and is a tracked status field
+  only - it does NOT wire a skill into any tool/agent registry (that would
+  need dynamic code loading, explicitly out of scope). Sandboxed code
+  execution ("test in sandbox") is honestly `NOT_IMPLEMENTED`.
+- `core/reports/dailyReport.ts` extended with a `research` section that
+  honestly states whether web research is configured, rather than ever
+  fabricating "overnight monitoring."
+- New `core/research/limits.ts` (max searches/fetches per task, max
+  concurrent research jobs, topic-poll minimum interval, failed-fetch
+  backoff) and `core/research/dedup.ts` (content hashing + refresh-interval
+  checks), both `Setting`-backed like `core/limits`.
+- New observability routes `/research/*` and `/skills/*`, new `AuthzAction`s
+  added additively (`research.read/write`, `skills.read/write/activate`).
+  12th health check: whether a web search provider credential is configured
+  (never a live network call from `/system/health`).
+- `core/enforcement/`, `tools/registry.ts`'s/`agents/registry.ts`'s
+  guarding, `core/state/`, `core/limits/`'s existing functions, `core/authz/`'s
+  role table (extended additively only), `core/policy/`, `core/ai/costControl.ts`,
+  and `core/worker/claim.ts` are all UNTOUCHED in their core mechanism -
+  verified with `git diff --stat` at the end of this phase.
+- 54 new tests (A-Z per the phase spec's test list) - 290/290 tests passing
+  in total (up from 236/236 after Phase 5).
+
+WHAT SHOULD BE BUILT NEXT (as of Phase 6)
+- Real credentials/live testing for `BraveSearchProvider` (untested against
+  the live API in this sandbox).
+- A real code-execution sandbox for skill "test in sandbox" and the dynamic-
+  loading mechanism an actual `ACTIVE` skill would need to be a live
+  capability, not just a tracked status - both deliberately out of scope.
+- Real event sources for the still-reserved categories (CRM/EMAIL/VOICE/
+  CALENDAR) - WEB is now real, MARKET intelligence exists as an agent but
+  MarketEventSource itself is still a stub.
+- A semantic (not keyword-overlap) cross-source agreement/conflict detector
+  for `core/research/evidence.ts`'s `compareAcrossSources()`.
