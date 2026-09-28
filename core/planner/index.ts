@@ -201,6 +201,8 @@ export async function getTask(id: string): Promise<PlannedTask | null> {
   return row ? toPlannedTask(row) : null;
 }
 
+const TERMINAL_STATUSES: TaskStatus[] = ["DONE", "FAILED", "CANCELLED"];
+
 /**
  * Phase 4: creates real Task rows from a validated Brain Plan
  * (core/brain/plan.ts) - one parent task for the goal, one subtask per step,
@@ -208,19 +210,86 @@ export async function getTask(id: string): Promise<PlannedTask | null> {
  * map execution results back to plan steps. The caller (core/brain) is
  * responsible for validating the Plan BEFORE calling this - this function
  * does not re-validate step shape, only persists it.
+ *
+ * Hardening pass (closing the generic worker -> Brain task-tree seam):
+ * `options.rootTaskId` lets a caller (the Worker) supply an EXISTING task id
+ * to use as the plan's root/parent instead of creating a new, unrelated
+ * parent task - the plan's step-subtasks are created with
+ * `parentId = rootTaskId` directly, so the caller's own triggering Task row
+ * IS the parent (one real, queryable Task.parentId tree), never a second
+ * "duplicate" row created merely for traceability.
+ *
+ * Retry-duplication guard: if `rootTaskId` already has non-terminal children
+ * (e.g. a previous `planFromPlan` call for the same root is still mid-flight
+ * - RETRYING/WAITING/BLOCKED/IN_PROGRESS/PENDING/QUEUED), this call reuses
+ * those existing rows instead of creating a second, stale-alongside set of
+ * child tasks under the same root. Only when every existing child has
+ * already reached a terminal status (or none exist yet) does it create a
+ * fresh set - a genuine re-plan after a fully-finished previous attempt is
+ * still allowed, just never while a previous attempt's children are still
+ * in flight.
  */
 export async function planFromPlan(
   plan: {
     goal: string;
     steps: Array<{ stepId: string; description: string; agent?: string; tool?: string }>;
   },
-  parentId?: string
-): Promise<{ parent: PlannedTask; subtasks: PlannedTask[] }> {
+  options?: string | { parentId?: string; rootTaskId?: string }
+): Promise<{ parent: PlannedTask; subtasks: PlannedTask[]; reusedExisting?: boolean }> {
+  // Backward-compatible shape: a bare string is treated as the old `parentId`
+  // positional argument.
+  const opts = typeof options === "string" ? { parentId: options } : options ?? {};
+
+  if (opts.rootTaskId) {
+    const rootRow = await prisma.task.findUnique({ where: { id: opts.rootTaskId } });
+    if (!rootRow) {
+      throw new Error(`planFromPlan: rootTaskId "${opts.rootTaskId}" does not exist.`);
+    }
+
+    const existingChildren = await prisma.task.findMany({
+      where: { parentId: opts.rootTaskId },
+      orderBy: { createdAt: "asc" },
+    });
+    const nonTerminal = existingChildren.filter(
+      (t) => !TERMINAL_STATUSES.includes(t.status as TaskStatus)
+    );
+    if (nonTerminal.length > 0) {
+      log("ACTION", "planner.plan_from_plan_reused", {
+        rootTaskId: opts.rootTaskId,
+        childCount: existingChildren.length,
+        nonTerminalCount: nonTerminal.length,
+      });
+      return { parent: toPlannedTask(rootRow), subtasks: existingChildren.map(toPlannedTask), reusedExisting: true };
+    }
+
+    const subtasks: PlannedTask[] = [];
+    for (const step of plan.steps) {
+      const sub = await prisma.task.create({
+        data: {
+          title: step.description,
+          parentId: opts.rootTaskId,
+          stepId: step.stepId,
+          agentName: step.agent,
+          toolName: step.tool,
+        },
+      });
+      subtasks.push(toPlannedTask(sub));
+    }
+
+    log("ACTION", "planner.plan_from_plan", {
+      taskId: opts.rootTaskId,
+      stepCount: subtasks.length,
+      attachedToExistingRoot: true,
+    });
+
+    return { parent: toPlannedTask(rootRow), subtasks };
+  }
+
   const parent = await prisma.task.create({
     data: {
       title: plan.goal,
       description: `Brain-generated plan with ${plan.steps.length} step(s).`,
-      parentId,
+      parentId: opts.parentId,
     },
   });
 
@@ -242,6 +311,32 @@ export async function planFromPlan(
   await publish({ type: "task.created", payload: { taskId: parent.id, title: plan.goal }, source: "brain" });
 
   return { parent: toPlannedTask(parent), subtasks };
+}
+
+/**
+ * Hardening pass: aggregates a set of child Task statuses into one root
+ * outcome, per the documented failure-propagation rules -
+ * any BLOCKED child -> BLOCKED; any still in-flight child (PENDING/QUEUED/
+ * IN_PROGRESS/RETRYING) -> PENDING (the tree hasn't finished); any WAITING
+ * child -> WAITING; all DONE -> DONE; otherwise (a mix including at least one
+ * FAILED) -> PARTIAL if at least one child DONE, FAILED if none did. A single,
+ * named, tested function so this logic is never scattered as ad-hoc
+ * conditionals across the worker/API layer - mirrors the ordering already
+ * used by core/brain/runPlan.ts's `overallStatus()` for BrainResultStatus.
+ */
+export type RootOutcome = "DONE" | "PARTIAL" | "FAILED" | "WAITING" | "BLOCKED" | "PENDING";
+
+export function deriveRootOutcome(childStatuses: TaskStatus[]): RootOutcome {
+  if (childStatuses.length === 0) return "PENDING";
+  if (childStatuses.some((s) => s === "BLOCKED")) return "BLOCKED";
+  if (childStatuses.some((s) => s === "WAITING")) return "WAITING";
+  const inFlight = childStatuses.some(
+    (s) => s === "PENDING" || s === "QUEUED" || s === "IN_PROGRESS" || s === "RETRYING"
+  );
+  if (inFlight) return "PENDING";
+  if (childStatuses.every((s) => s === "DONE")) return "DONE";
+  const someSucceeded = childStatuses.some((s) => s === "DONE");
+  return someSucceeded ? "PARTIAL" : "FAILED";
 }
 
 export async function listTasks(parentId?: string | null): Promise<PlannedTask[]> {

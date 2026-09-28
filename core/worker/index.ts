@@ -86,13 +86,16 @@ export async function processClaimedTask(task: PlannedTask, retryLimit: number):
       return markTerminal(task, "FAILED", result.summary, retryLimit);
     }
 
-    // Generic task: delegate to the Brain. The Brain creates and runs its own
-    // plan/task tree for this request (core/brain/index.ts) - it does not
-    // operate "on" an existing Task id, so the original task is marked to
-    // reflect the Brain's outcome rather than re-parented into it.
+    // Generic task: delegate to the Brain, attaching its plan directly under
+    // THIS task (rootTaskId) - core/planner.planFromPlan creates the plan's
+    // step-subtasks with parentId = task.id instead of a second, unrelated
+    // parent task, so the trigger task and the executed plan are one real,
+    // queryable Task tree (hardening pass - see docs/PHASE5_AUTONOMOUS_WORKER.md
+    // "known limitations" for the gap this closes).
     const brainResult = await brain.handle(
       { message: `${task.title}${task.description ? `\n\n${task.description}` : ""}` },
-      WORKER_IDENTITY
+      WORKER_IDENTITY,
+      { rootTaskId: task.id }
     );
     const detail = `Delegated to Brain (task ${brainResult.taskId ?? "n/a"}): ${brainResult.reply}`;
     switch (brainResult.status) {
@@ -233,8 +236,26 @@ export class Worker {
     const limits = await getLimitsConfig();
     log("ACTION", "worker.task_start", { workerId: this.workerId, taskId: task.id, title: task.title });
 
+    // Audit trail: target = the task id, same convention runPlan's per-step
+    // entries and spawn's rejection entries use, so the root task's own
+    // claim/outcome events are queryable alongside its now-real children's
+    // step-outcome entries via one AuditLog query filtered by task id(s).
+    await writeAuditLog({
+      actor: identityToActorString(WORKER_IDENTITY),
+      action: "worker.task_claimed",
+      target: task.id,
+      meta: { title: task.title, toolName: task.toolName, agentName: task.agentName },
+    });
+
     const outcome = await processClaimedTask(task, limits.retryLimit);
     await releaseClaim(task.id, this.workerId);
+
+    await writeAuditLog({
+      actor: identityToActorString(WORKER_IDENTITY),
+      action: "worker.task_outcome",
+      target: task.id,
+      meta: { status: outcome.status, detail: outcome.detail },
+    });
 
     await publish({
       type: "TASK.worker_outcome",

@@ -31,6 +31,19 @@ export interface BrainRequest {
   toolCall?: { name: string; input?: Record<string, unknown> };
 }
 
+export interface BrainHandleOptions {
+  /**
+   * Hardening pass: when supplied, the Brain attaches its plan's step-tasks
+   * as children of this EXISTING task (via `core/planner.planFromPlan`'s
+   * `rootTaskId` option) instead of creating its own, unrelated parent task.
+   * Lets a caller (the Worker) say "attach your plan under THIS task" so the
+   * triggering task and the executed plan share one real, queryable tree.
+   */
+  rootTaskId?: string;
+  /** Internal: set on the Brain's own single re-plan retry (see #11 below). */
+  _replanAttempted?: boolean;
+}
+
 const PROPOSE_PLAN_TOOL: AIToolDefinition = {
   name: "propose_plan",
   description:
@@ -90,8 +103,10 @@ function renderContextForPrompt(ctx: BrainContext): string {
 export class Brain {
   constructor(private aiProvider: AIProvider = createDefaultProvider()) {}
 
-  async handle(request: BrainRequest, identity?: Identity, _replanAttempted = false): Promise<BrainResult> {
+  async handle(request: BrainRequest, identity?: Identity, options?: BrainHandleOptions): Promise<BrainResult> {
     const conversationId = request.conversationId ?? "default";
+    const rootTaskId = options?.rootTaskId;
+    const replanAttempted = options?._replanAttempted ?? false;
 
     // OBSERVE: check global state before doing any work at all.
     const state = await getSystemState();
@@ -178,8 +193,10 @@ export class Brain {
 
     // Create real Task rows for the goal + one subtask per step (POLICY
     // CHECK happens per-step, inside core/enforcement, when each subtask is
-    // actually executed below - not here).
-    const { parent, subtasks } = await planFromPlan(plan);
+    // actually executed below - not here). When rootTaskId is supplied, no
+    // new parent row is created - the plan's steps become children of the
+    // caller's own existing task (see planFromPlan's rootTaskId option).
+    const { parent, subtasks } = await planFromPlan(plan, rootTaskId ? { rootTaskId } : undefined);
     const taskIdByStep = new Map(subtasks.filter((t) => t.stepId).map((t) => [t.stepId as string, t.id]));
 
     // EXECUTE (through the registry+enforcement gate only) + implicit VERIFY
@@ -187,7 +204,15 @@ export class Brain {
     // deeper automated verification pass is out of scope for this phase).
     const runResult = await runPlan(plan, taskIdByStep, identity);
 
-    await updateParentTaskStatus(parent.id, runResult.status);
+    // When operating on a caller-supplied rootTaskId, the caller (the Worker)
+    // owns that task's lifecycle - including retry accounting via
+    // core/planner.retryOrFailTask on a FAILED outcome - so the Brain does
+    // NOT also overwrite its status here (that would race the caller's own,
+    // retry-aware status write with a plain one). For the Brain's own,
+    // self-created task tree (no rootTaskId), this is still the only writer.
+    if (!rootTaskId) {
+      await updateParentTaskStatus(parent.id, runResult.status);
+    }
 
     // REMEMBER: persist the plan + outcome to memory (DECISION namespace).
     const summary = `Plan for "${plan.goal}" finished with status ${runResult.status}.`;
@@ -205,7 +230,7 @@ export class Brain {
     const reply = buildReport(plan, runResult.status, runResult.steps);
     await this.remember(conversationId, reply);
 
-    if (runResult.status === "FAILED" && !_replanAttempted) {
+    if (runResult.status === "FAILED" && !replanAttempted) {
       // Minimal, single documented re-plan attempt: give the Brain one more
       // try with the failure surfaced as context, never a full replanning
       // loop (see docs/PHASE4_BRAIN_MEMORY.md).
@@ -215,7 +240,7 @@ export class Brain {
           .filter((s) => s.status === "FAILED")
           .map((s) => `${s.description} (${s.detail})`)
           .join("; ")}. Propose a different plan, or explain what information is missing.)`;
-      return this.handle({ message: failureContext, conversationId }, identity, true);
+      return this.handle({ message: failureContext, conversationId }, identity, { rootTaskId, _replanAttempted: true });
     }
 
     return {

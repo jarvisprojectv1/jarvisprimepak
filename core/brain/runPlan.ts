@@ -10,7 +10,8 @@ import { updateTaskStatus, retryOrFailTask, type PlannedTask } from "../planner"
 import { getLimitsConfig } from "../limits";
 import { getSystemState } from "../state";
 import { log } from "../../security/logger";
-import type { Identity } from "../auth/identity";
+import { writeAuditLog } from "../../security/audit";
+import { identityToActorString, SYSTEM_IDENTITY, type Identity } from "../auth/identity";
 import type { Plan, PlanStep } from "./plan";
 import type { BrainResultStatus, BrainStepOutcome } from "./types";
 
@@ -106,6 +107,20 @@ async function executeStep(
 
   log("ACTION", "brain.step_outcome", { stepId: step.stepId, status: outcomeStatus, tool: step.tool, agent: step.agent });
 
+  // Audit trail: target = the step's own Task id, so the whole connected
+  // tree (root task + every real child) is traceable via a single
+  // `AuditLog` query filtered by task id - reuses the same "target holds a
+  // task id" convention core/worker/spawn.ts already uses for
+  // `worker.spawn_rejected`, rather than inventing a new audit shape.
+  if (taskId) {
+    await writeAuditLog({
+      actor: identityToActorString(identity ?? SYSTEM_IDENTITY),
+      action: "brain.step_outcome",
+      target: taskId,
+      meta: { stepId: step.stepId, status: outcomeStatus, tool: step.tool, agent: step.agent, detail },
+    });
+  }
+
   return { stepId: step.stepId, description: step.description, agent: step.agent, tool: step.tool, taskId, status: outcomeStatus, detail, evidence };
 }
 
@@ -169,12 +184,22 @@ export async function runPlan(
   for (const step of dependentSteps) {
     const haltedNow = await isHalted();
     if (haltedNow) {
+      const taskIdForHalt = taskIdByStep.get(step.stepId);
+      if (taskIdForHalt) {
+        // Hardening pass: this branch previously reported the step's outcome
+        // as BLOCKED without ever persisting that onto its own Task row -
+        // invisible before now (an untagged worker-delegated task's steps
+        // lived in the Brain's own orphan tree that nothing else read), but a
+        // real problem once these child Task rows are genuinely linked under
+        // a worker's root task and expected to be consistently queryable.
+        await updateTaskStatus(taskIdForHalt, "BLOCKED", `System is ${haltedNow}; step was not started.`);
+      }
       outcomes.push({
         stepId: step.stepId,
         description: step.description,
         agent: step.agent,
         tool: step.tool,
-        taskId: taskIdByStep.get(step.stepId),
+        taskId: taskIdForHalt,
         status: "BLOCKED",
         detail: `System is ${haltedNow}; remaining steps were not started.`,
       });
