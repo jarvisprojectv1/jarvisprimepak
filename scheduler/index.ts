@@ -297,10 +297,19 @@ export async function registerExampleJobs(): Promise<void> {
   await scheduler.register({
     name: "morning-briefing",
     triggerType: "daily",
-    schedule: "0 5 * * *", // 05:00 every day (hardening pass: moved from 07:00 to 05:00;
-    // timezone mechanism unchanged - same literal "UTC" the daily-report job below uses,
-    // not a new timezone-handling approach)
-    timezone: "UTC",
+    // 05:00 Asia/Karachi (Phase 7.1 hardening: previously hardcoded "UTC",
+    // which fired the briefing at 05:00 UTC = 10:00 Pakistan time, not the
+    // intended local morning. Pakistan Standard Time is a fixed UTC+5 offset
+    // with NO daylight saving (verified: Pakistan abolished DST after a
+    // brief 2008-2009 trial), so this timezone string, unlike most others,
+    // needs no seasonal re-derivation. node-cron's cron.schedule(expr, fn,
+    // {timezone}) passes the timezone straight through to the underlying
+    // `cron-parser`, which interprets the cron fields IN that timezone (not
+    // UTC-then-converted) - verified by reading node-cron's TaskContext/
+    // schedule implementation before making this change. 05:00 Asia/Karachi
+    // == 00:00 UTC.
+    schedule: "0 5 * * *",
+    timezone: "Asia/Karachi",
     handler: () => {
       // The ConditionRule matching SCHEDULE.fired{jobName:"morning-briefing"}
       // creates the task; nothing else to do here.
@@ -316,11 +325,38 @@ export async function registerExampleJobs(): Promise<void> {
   // any other tool call. Kept as a genuinely separate job (rather than
   // folding into morning-briefing) since it fires 14 hours later and creates
   // a differently-tagged task.
+  // Phase 7.1 (items 2-4): dispatches due follow-ups. Unlike the two jobs
+  // above, this job's handler calls core/business/followUp.ts's
+  // scheduleDueFollowUps() directly rather than going through the
+  // SCHEDULE.fired -> ConditionRule -> task indirection - it isn't creating
+  // ONE task per fire, it's finding N due FollowUp rows and creating one
+  // Task per row itself (scheduleDueFollowUps already does this atomically
+  // and duplicate-fire-safely - see that function's header). Hourly UTC:
+  // this is an internal dispatch cadence, not a business-facing fire time,
+  // so it is deliberately NOT one of the two jobs this hardening pass was
+  // asked to retime to Asia/Karachi.
+  await scheduler.register({
+    name: "follow-up-dispatch",
+    triggerType: "interval",
+    schedule: "0 * * * *", // hourly
+    timezone: "UTC",
+    handler: async () => {
+      const { scheduleDueFollowUps } = await import("../core/business/followUp");
+      await scheduleDueFollowUps();
+    },
+  });
+
   await scheduler.register({
     name: "daily-report",
     triggerType: "daily",
-    schedule: "0 21 * * *", // 21:00 every day
-    timezone: "UTC",
+    // 21:00 Asia/Karachi (Phase 7.1 hardening - see morning-briefing above
+    // for the timezone rationale). 21:00 Asia/Karachi == 16:00 UTC. The
+    // report's DATA is unaffected by this change - only the job's firing
+    // time. Every other scheduled job in this file keeps its existing UTC
+    // timezone; only these two, explicitly named in the hardening request,
+    // change.
+    schedule: "0 21 * * *",
+    timezone: "Asia/Karachi",
     handler: () => {
       // The ConditionRule matching SCHEDULE.fired{jobName:"daily-report"}
       // creates the task; nothing else to do here.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Scheduler, registerExampleJobs } from "./index";
+import { Scheduler, registerExampleJobs, scheduler } from "./index";
 import { prisma } from "../database/client";
 
 describe("scheduler", () => {
@@ -145,18 +145,62 @@ describe("scheduler", () => {
     secondProcessScheduler.stopAll();
   });
 
-  it("morning-briefing runs at 05:00 UTC (hardening fix: moved from 07:00), same timezone mechanism as daily-report", async () => {
+  it("morning-briefing and daily-report are stored with the literal Asia/Karachi timezone (Phase 7.1 hardening)", async () => {
     await registerExampleJobs();
 
     const morning = await prisma.automation.findUnique({ where: { name: "morning-briefing" } });
     expect(morning?.schedule).toBe("0 5 * * *");
-    expect(morning?.timezone).toBe("UTC");
+    expect(morning?.timezone).toBe("Asia/Karachi");
 
     const daily = await prisma.automation.findUnique({ where: { name: "daily-report" } });
     expect(daily?.schedule).toBe("0 21 * * *");
-    expect(daily?.timezone).toBe("UTC");
-    // Same timezone mechanism (the literal "UTC" default), not a new approach.
+    expect(daily?.timezone).toBe("Asia/Karachi");
+    // Same timezone mechanism (the literal stored string passed straight to
+    // node-cron), not a new approach - both jobs use it identically.
     expect(morning?.timezone).toBe(daily?.timezone);
+  });
+
+  it("Asia/Karachi is a fixed UTC+5 offset with no daylight saving: 05:00 local == 00:00 UTC, 21:00 local == 16:00 UTC", () => {
+    // Verified via Intl (the same mechanism node-cron's TimeMatcher itself
+    // uses internally) rather than assumed - Pakistan has used a flat UTC+5
+    // offset year-round since abolishing its brief 2008-2009 DST trial.
+    const offsetMinutesFor = (utcDate: Date): number => {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Karachi",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(utcDate);
+      const hour = Number(parts.find((p) => p.type === "hour")!.value);
+      const minute = Number(parts.find((p) => p.type === "minute")!.value);
+      return hour * 60 + minute;
+    };
+
+    // A January date (winter) and a July date (summer) both resolve to the
+    // exact same +5h offset - proving there is no seasonal DST shift.
+    const winterUtcMidnight = new Date(Date.UTC(2026, 0, 15, 0, 0, 0));
+    const summerUtcMidnight = new Date(Date.UTC(2026, 6, 15, 0, 0, 0));
+    expect(offsetMinutesFor(winterUtcMidnight)).toBe(5 * 60); // 00:00 UTC -> 05:00 local
+    expect(offsetMinutesFor(summerUtcMidnight)).toBe(5 * 60);
+
+    const winterUtcAfternoon = new Date(Date.UTC(2026, 0, 15, 16, 0, 0));
+    const summerUtcAfternoon = new Date(Date.UTC(2026, 6, 15, 16, 0, 0));
+    expect(offsetMinutesFor(winterUtcAfternoon)).toBe(21 * 60); // 16:00 UTC -> 21:00 local
+    expect(offsetMinutesFor(summerUtcAfternoon)).toBe(21 * 60);
+  });
+
+  it("re-registering morning-briefing/daily-report (simulating a restart) does not create a duplicate Automation row or duplicate cron task", async () => {
+    await registerExampleJobs();
+    await registerExampleJobs(); // second "boot"
+
+    const morningRows = await prisma.automation.findMany({ where: { name: "morning-briefing" } });
+    const dailyRows = await prisma.automation.findMany({ where: { name: "daily-report" } });
+    expect(morningRows.length).toBe(1);
+    expect(dailyRows.length).toBe(1);
+    expect(morningRows[0].timezone).toBe("Asia/Karachi");
+    expect(dailyRows[0].timezone).toBe("Asia/Karachi");
+    expect(scheduler.isRunning("morning-briefing")).toBe(true);
+    expect(scheduler.isRunning("daily-report")).toBe(true);
   });
 
   it("re-registering the same job name (simulating two process boots) upserts in place: no duplicate Automation row, no duplicate running cron task", async () => {
