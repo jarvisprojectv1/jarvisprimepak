@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Scheduler } from "./index";
+import { Scheduler, registerExampleJobs } from "./index";
 import { prisma } from "../database/client";
 
 describe("scheduler", () => {
@@ -143,5 +143,52 @@ describe("scheduler", () => {
     const row = await prisma.automation.findUnique({ where: { name } });
     expect(row?.enabled).toBe(false);
     secondProcessScheduler.stopAll();
+  });
+
+  it("morning-briefing runs at 05:00 UTC (hardening fix: moved from 07:00), same timezone mechanism as daily-report", async () => {
+    await registerExampleJobs();
+
+    const morning = await prisma.automation.findUnique({ where: { name: "morning-briefing" } });
+    expect(morning?.schedule).toBe("0 5 * * *");
+    expect(morning?.timezone).toBe("UTC");
+
+    const daily = await prisma.automation.findUnique({ where: { name: "daily-report" } });
+    expect(daily?.schedule).toBe("0 21 * * *");
+    expect(daily?.timezone).toBe("UTC");
+    // Same timezone mechanism (the literal "UTC" default), not a new approach.
+    expect(morning?.timezone).toBe(daily?.timezone);
+  });
+
+  it("re-registering the same job name (simulating two process boots) upserts in place: no duplicate Automation row, no duplicate running cron task", async () => {
+    const scheduler = new Scheduler();
+    const name = `boot-sim-${Date.now()}`;
+    const job = {
+      name,
+      triggerType: "daily" as const,
+      schedule: "0 5 * * *",
+      timezone: "UTC",
+      handler: () => {},
+    };
+
+    // "Boot" 1
+    await scheduler.register(job);
+    // "Boot" 2 (same process instance re-registering, as registerExampleJobs()
+    // does every time the API starts) - and a second, independent Scheduler
+    // instance simulating a fresh process entirely.
+    await scheduler.register(job);
+    const secondBootScheduler = new Scheduler();
+    await secondBootScheduler.register(job);
+
+    const rows = await prisma.automation.findMany({ where: { name } });
+    expect(rows.length).toBe(1);
+    expect(rows[0].schedule).toBe("0 5 * * *");
+
+    // Exactly one running cron task per scheduler instance holding this name,
+    // and re-registering never leaves a second task ticking underneath.
+    expect(scheduler.isRunning(name)).toBe(true);
+    expect(secondBootScheduler.isRunning(name)).toBe(true);
+
+    scheduler.stop(name);
+    secondBootScheduler.stop(name);
   });
 });

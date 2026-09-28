@@ -297,7 +297,9 @@ export async function registerExampleJobs(): Promise<void> {
   await scheduler.register({
     name: "morning-briefing",
     triggerType: "daily",
-    schedule: "0 7 * * *", // 07:00 every day
+    schedule: "0 5 * * *", // 05:00 every day (hardening pass: moved from 07:00 to 05:00;
+    // timezone mechanism unchanged - same literal "UTC" the daily-report job below uses,
+    // not a new timezone-handling approach)
     timezone: "UTC",
     handler: () => {
       // The ConditionRule matching SCHEDULE.fired{jobName:"morning-briefing"}
