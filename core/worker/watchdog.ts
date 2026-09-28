@@ -18,20 +18,38 @@ import { notificationService } from "../notifications";
 import { writeAuditLog } from "../../security/audit";
 import { WORKER_IDENTITY, identityToActorString } from "../auth/identity";
 import { log } from "../../security/logger";
+import { reconcileBrowserSessions } from "../browser/session";
 
 export type WatchdogFindingKind =
   | "HEARTBEAT_TIMEOUT"
   | "REPEATED_FAILURES"
   | "TASK_STARVATION"
   | "QUEUE_GROWTH"
-  | "EXCESSIVE_RETRIES";
+  | "EXCESSIVE_RETRIES"
+  | "ORPHANED_BROWSER_SESSIONS";
 
 export interface WatchdogFinding {
   kind: WatchdogFindingKind;
   detail: string;
 }
 
-/** Pure(ish) diagnostics - no restart side effects. Used both by the watchdog loop and by GET /system/health. */
+/**
+ * Pure(ish) diagnostics for everything EXCEPT the browser-session check
+ * below - no restart side effects. Used both by the watchdog loop and by
+ * GET /system/health.
+ *
+ * Phase 10.1 exception, explicit and deliberate: the browser-session-health
+ * check IS side-effecting - it calls reconcileBrowserSessions() (
+ * core/browser/session.ts), which actually claims and closes
+ * orphaned/expired/crashed sessions, not just reports on them. This matches
+ * the disclosed Phase 10 gap this sub-phase closes ("cleanup exists but
+ * isn't wired into the watchdog") - the fix IS wiring real cleanup into this
+ * function, not just adding another read-only finding. It is intentionally
+ * NEVER gated on core/state's system state here (this function has never
+ * checked system state, for any finding) - cleanup must keep running during
+ * PAUSED/EMERGENCY_STOP even though core/enforcement already blocks NEW
+ * browser tool actions elsewhere, unchanged by this phase.
+ */
 export async function runWatchdogChecks(workerId: string): Promise<WatchdogFinding[]> {
   const config = await getWorkerConfig();
   const findings: WatchdogFinding[] = [];
@@ -74,6 +92,25 @@ export async function runWatchdogChecks(workerId: string): Promise<WatchdogFindi
       kind: "EXCESSIVE_RETRIES",
       detail: `${nearLimitRetries} task(s) are RETRYING at/near the retry limit.`,
     });
+  }
+
+  // Phase 10.1: real browser-session cleanup, wired into the watchdog (the
+  // anchor requirement this sub-phase closes). Only reported as a finding
+  // when something notable actually happened - genuine orphans/crashes
+  // detected, or a cleanup permanently failed - never for a routine
+  // idle/TTL-expiry close (those are expected, frequent, and not
+  // watchdog-worthy; see reportFindings()'s notification, which fires for
+  // ANY non-empty findings list, so a routine close must not land here).
+  try {
+    const browserReport = await reconcileBrowserSessions();
+    if (browserReport.orphansDetected > 0 || browserReport.cleanupFailed > 0) {
+      findings.push({
+        kind: "ORPHANED_BROWSER_SESSIONS",
+        detail: `${browserReport.orphansDetected} orphaned/crashed/expired browser session(s) detected this pass (${browserReport.closed} closed, ${browserReport.cleanupFailed} cleanup-failed). ${browserReport.reasons.slice(0, 5).join(" | ")}`,
+      });
+    }
+  } catch (err) {
+    log("ERROR", "worker.watchdog_browser_reconcile_failed", { error: err instanceof Error ? err.message : String(err) });
   }
 
   return findings;

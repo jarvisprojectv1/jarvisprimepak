@@ -977,18 +977,33 @@ model Setting {
 model BrowserSession {
   id             String    @id @default(uuid())
   provider       String // "playwright" | "mock"
-  status         String    @default("ACTIVE") // ACTIVE | CLOSED | EXPIRED
+  // Phase 10.1 (browser session lifecycle hardening): extended status set -
+  // CREATED | ACTIVE | IDLE | CLEANING | EXPIRED | CLOSED | CRASHED |
+  // ORPHANED | CLEANUP_FAILED. SQLite has no enums, so this is validated in
+  // code (core/browser/session.ts's SESSION_STATUSES/isValidSessionStatus),
+  // same convention as Task.status. The
+  // ACTIVE/IDLE/ORPHANED/EXPIRED/CRASHED -> CLEANING transition is an atomic
+  // conditional updateMany (mirrors core/worker/claim.ts's claimTask()), so
+  // only one concurrent cleanup caller ever wins and calls the provider.
+  status         String    @default("ACTIVE")
   profileId      String? // reserved for a future named-profile concept; unused this phase
   currentUrl     String?
   currentDomain  String?
   isolationLevel String    @default("CONTEXT") // "CONTEXT" - a fresh Playwright BrowserContext per session
   taskId         String?
-  createdBy      String // Identity label ("owner" | "system" | agent name)
+  createdBy      String // Identity label ("owner" | "system" | agent name) - doubles as owner for isolation checks
   createdAt      DateTime  @default(now())
   lastActivityAt DateTime  @default(now())
   expiresAt      DateTime
   closedAt       DateTime?
   closeReason    String?
+  // Phase 10.1: bounded-retry cleanup-failure bookkeeping (section 29/30) -
+  // persisted so a failure is never silently discarded and survives a
+  // process restart (never held only in memory).
+  cleanupAttempts      Int       @default(0)
+  lastCleanupError     String?
+  lastCleanupAttemptAt DateTime?
+  nextCleanupRetryAt   DateTime?
 
   @@index([status])
   @@index([taskId])
