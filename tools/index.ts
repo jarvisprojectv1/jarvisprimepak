@@ -10,6 +10,7 @@ import { calendarTool } from "./calendar";
 import { voiceTool } from "./voice";
 import { webTool } from "./web";
 import { reportsTool } from "./reports";
+import { webSearchTool, webFetchTool } from "./web/index";
 
 let registered = false;
 
@@ -24,6 +25,11 @@ export function registerBuiltinTools(): void {
     voiceTool,
     webTool,
     reportsTool,
+    // Phase 6: real (but honestly CONFIGURATION_REQUIRED-when-uncredentialed)
+    // web search/fetch tools, replacing webTool's permanent stub for anything
+    // that actually needs open-web research - see tools/web/.
+    webSearchTool,
+    webFetchTool,
   ]) {
     if (!toolRegistry.get(tool.name)) {
       toolRegistry.register(tool);
