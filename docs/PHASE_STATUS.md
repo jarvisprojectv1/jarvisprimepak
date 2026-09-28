@@ -546,3 +546,86 @@ WHAT SHOULD BE BUILT NEXT (as of Phase 6)
   MarketEventSource itself is still a stub.
 - A semantic (not keyword-overlap) cross-source agreement/conflict detector
   for `core/research/evidence.ts`'s `compareAcrossSources()`.
+
+================================================================================
+PHASE 6.1 UPDATE (RESEARCH SYNTHESIS: WIRING THE AI PROVIDER INTO
+RESEARCHAGENT) — see docs/PHASE6_1_RESEARCH_SYNTHESIS.md for the full design
+note (trust-boundary prompt structure, the grounding validator's exact
+rules, cost-control wiring). Summary:
+
+- Closed the one verified gap from Phase 6: `agents/research-agent.ts`
+  previously did deterministic keyword-based classification only and never
+  called an AI provider - the only call site of
+  `core/research/trustBoundary.wrapExternalContent()` was a discarded
+  `void wrapExternalContent(...)`. That call is now real.
+- New `core/research/synthesis.ts`: a direct `AIProvider.complete()` call
+  (constructor-injected into `ResearchAgent`, exactly like `core/brain`'s own
+  `Brain(aiProvider)` DI pattern) over the evidence the agent already
+  collected - NOT a second `core/brain` planning loop (see the file's header
+  comment for the full justification). `checkCostLimit()` is checked first
+  (skip + honest `COST_LIMIT_EXCEEDED` if exhausted, never call the
+  provider); the call itself passes **zero tools** - the single most
+  important safety property in this phase.
+- The prompt has four explicitly delimited zones: TRUSTED SYSTEM
+  INSTRUCTIONS, TRUSTED USER REQUEST, JARVIS INTERNAL DATA, and UNTRUSTED
+  EXTERNAL CONTENT (built exclusively through
+  `core/research/trustBoundary.wrapExternalContentBlocks()` - raw fetched
+  text never reaches any other zone). `core/research/trustBoundary.ts` was
+  extended additively with an explicit `sourceId`/`trustLevel`/
+  `sourceType`/`instructionsAllowed` shape (`ExternalContentBlock`), carried
+  into the wrapped text's header.
+- New `core/research/synthesisTypes.ts`: the `ResearchSynthesis` structured
+  contract (`summary`, `findings[]`, `uncertainties`, `contradictions[]`,
+  `sources`, `evidence`, `confidence`, `followUpQuestions`), produced as
+  JSON and parsed with the exact same fenced-code-block tolerance as
+  `core/brain/plan.ts`'s `parseAndValidatePlan()` - malformed JSON or a
+  schema-invalid shape both fail closed.
+- New `core/research/groundingValidator.ts`: runs AFTER parsing, BEFORE
+  anything is trusted. A finding with an empty/unknown `evidenceIds` or
+  `sourceIds` is rejected outright (not partially trusted); a `FACT`
+  classification with fewer than 2 distinct valid source ids is downgraded
+  to `SOURCE_CLAIM` (never rejected outright - the underlying claim is still
+  grounded, just not corroborated enough to call it a FACT). Zero surviving
+  findings -> the agent surfaces an honest `NO_VALID_FINDINGS`/error, never
+  a fabricated result.
+- `agents/research-agent.ts`: the deterministic search -> fetch -> classify
+  -> compare pipeline (Phase 6, unchanged, still the always-available
+  baseline) now additionally runs LLM synthesis over the same evidence when
+  an `AIProvider` is configured and the cost budget allows. Memory writes
+  from grounded findings only happen AFTER the grounding validator confirms
+  support, with a real (not fabricated 1.0) `confidence` and
+  `relatedEntity` pointing at the finding's evidence id. A mid-execution
+  pause/emergency-stop (state re-checked immediately before the one LLM
+  call, mirroring `core/brain`'s own mid-plan re-check) halts the synthesis
+  step with an honest `WAITING`, never letting it run silently.
+- 28 new tests across `core/research/synthesis.test.ts`,
+  `core/research/groundingValidator.test.ts`, and
+  `agents/research-agent.synthesis.test.ts` - including 6+ prompt-injection
+  payloads proven to stay confined to the untrusted zone with zero tools
+  offered and zero secrets ever present in the prompt, a multi-source
+  contradiction surfaced rather than silently resolved, cost-limit-exhausted
+  making no LLM call at all, and full provenance traceability from a
+  synthesis-derived Memory row back to its `ResearchRun`.
+- `core/enforcement/`, `tools/registry.ts`'s/`agents/registry.ts`'s
+  guarding, `core/state/`, `core/limits/`'s existing functions,
+  `core/policy/`, `core/ai/costControl.ts`'s existing checking logic, and
+  `core/worker/claim.ts` are all UNTOUCHED - `git diff --stat` against them
+  shows zero diff. Only `agents/research-agent.ts` and
+  `core/research/trustBoundary.ts` were modified; everything else is new,
+  additive files.
+- 318/318 tests passing (up from 290/290 after Phase 6): 290 existing + 28
+  new. Root and `apps/api` typechecks both clean.
+
+WHAT SHOULD BE BUILT NEXT (as of Phase 6.1)
+- Everything listed under Phase 6's own "what's next" still applies
+  unchanged (live `BraveSearchProvider` credentials, a real skill-code
+  sandbox, remaining reserved event sources, a semantic cross-source
+  comparator).
+- `core/brain/systemPrompt.ts`'s `Setting`-backed configurability was not
+  extended to the research synthesis system prompt
+  (`RESEARCH_SYNTHESIS_SYSTEM_PROMPT` in `core/research/synthesis.ts` is a
+  constant, not DB-backed) - a deliberate scope reduction for this narrow
+  phase, documented in `docs/PHASE6_1_RESEARCH_SYNTHESIS.md`.
+- The synthesis step is only wired into `agents/research-agent.ts`, not
+  `agents/market-agent.ts` (same plumbing, not touched here - out of scope
+  for this phase's narrow gap).
