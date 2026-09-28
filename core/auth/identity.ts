@@ -9,6 +9,13 @@
 // `IdentityKind` below.
 export type IdentityKind = "OWNER" | "SYSTEM" | "AGENT" | "SERVICE";
 
+export const IDENTITY_KINDS: readonly IdentityKind[] = ["OWNER", "SYSTEM", "AGENT", "SERVICE"];
+
+/** Strict, exhaustive role check. Never treat an unrecognized string as any valid kind - fail closed. */
+export function isIdentityKind(value: unknown): value is IdentityKind {
+  return typeof value === "string" && (IDENTITY_KINDS as string[]).includes(value);
+}
+
 export interface Identity {
   kind: IdentityKind;
   /** Stable id: a User.id for OWNER, or a fixed code-defined id for SYSTEM/AGENT/SERVICE. */
@@ -48,6 +55,29 @@ export function serviceIdentity(serviceName: string): Identity {
 /** Constructs an OWNER identity from a real, validated User row. Never construct this from client input alone. */
 export function ownerIdentity(userId: string, email: string): Identity {
   return { kind: "OWNER", id: userId, label: `owner:${email}` };
+}
+
+/**
+ * Derives the Identity a session should resolve to from a real, validated
+ * User row - using that row's stored `role` column as the sole source of
+ * truth for `kind`. This is the ONLY function core/auth/session.ts may use
+ * to turn a User row into an Identity; it must never hardcode a kind.
+ *
+ * Fails closed: returns null (never a fallback identity, never OWNER by
+ * default) if the row's `role` is missing/unrecognized or the account is
+ * inactive. Callers must treat null exactly like "no valid session".
+ */
+export function identityFromUser(user: {
+  id: string;
+  email: string;
+  role: unknown;
+  active?: boolean;
+}): Identity | null {
+  if (user.active === false) return null;
+  if (!isIdentityKind(user.role)) return null;
+
+  const label = `${user.role.toLowerCase()}:${user.email}`;
+  return { kind: user.role, id: user.id, label };
 }
 
 /** Renders an Identity to the flat string stored in AuditLog.actor / logs. Never round-tripped back into an Identity. */

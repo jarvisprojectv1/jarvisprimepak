@@ -108,15 +108,20 @@ match) and confirming an authenticated, fully-authorized OWNER still gets
 `status: "BLOCKED"`.
 
 `SYSTEM`/`AGENT`/`SERVICE` have narrower, fixed action sets in
-`core/authz`'s `ROLE_ACTIONS` table and currently have **no HTTP login
-flow** - they're only ever used as internal, code-constructed identities
-(e.g. passed to `guardToolExecution`'s wrapped function from a future
-internal caller). Every route in `apps/api` currently authenticates only
-`OWNER` sessions (since `Session` rows only ever resolve to an
-`ownerIdentity`), so the SYSTEM/AGENT/SERVICE branches of `core/authz` are
-exercised today only by its own unit tests and by `core/enforcement`'s
-default `SYSTEM_IDENTITY` fallback - genuine, forward-looking plumbing, not
-yet reachable from an HTTP request.
+`core/authz`'s `ROLE_ACTIONS` table. **Fixed (post-Phase-3 patch):**
+`validateSession()` no longer hardcodes `OWNER` for every session - it derives
+the Identity's `kind` from the authenticated `User` row's real `role` column
+via `identityFromUser()` (`core/auth/identity.ts`), re-read from the database
+on every request (no cache), and fails closed (returns `null`, never a
+fallback identity) if the role is unrecognized or the account is inactive.
+So an HTTP session for a `User` row with `role: "SERVICE"` genuinely resolves
+to a `SERVICE` identity and is genuinely rejected by OWNER-gated routes -
+this is exercised end to end by `apps/api/tests/security.test.ts`, not just
+`core/authz`'s unit tests. There is still no *self-service signup/HTTP login
+creation* path for a SYSTEM/AGENT/SERVICE account (only the OWNER seed script
+creates users), and `SYSTEM_IDENTITY`/`agentIdentity()`/`serviceIdentity()`
+remain the only way internal (non-HTTP) callers get those identities - that
+part of the original limitation still stands.
 
 ## 5. Route authentication summary
 
@@ -253,11 +258,19 @@ elsewhere.
 
 ## 11. Known limitations (honest accounting)
 
-- **SYSTEM/AGENT/SERVICE identities have no HTTP login flow** - they exist
-  only as code-constructed constants (`SYSTEM_IDENTITY`, `agentIdentity()`,
-  `serviceIdentity()`) for future internal callers (e.g. agent-to-agent tool
-  calls). Every current HTTP session resolves to `OWNER`. `core/authz`'s
-  handling of the other three kinds is tested at the unit level only.
+- **Fixed:** an HTTP session's Identity is now derived from the authenticated
+  `User.role` column (`core/auth/identity.identityFromUser`), not hardcoded to
+  `OWNER` - a `SERVICE`/`AGENT`/`SYSTEM`-role user genuinely authenticates as
+  that kind and is genuinely rejected by OWNER-gated routes, verified by
+  `apps/api/tests/security.test.ts` end to end, not just `core/authz`'s unit
+  suite. Changing `User.role` in the database takes effect on the very next
+  request (sessions carry no cached identity).
+- **Still a real limitation:** there is no self-service HTTP account-creation
+  or invitation flow for a SYSTEM/AGENT/SERVICE-role user (by design, per this
+  patch's scope) - only the OWNER seed script creates users at all. Internal
+  (non-HTTP) callers still get their identity from the code-constructed
+  constants (`SYSTEM_IDENTITY`, `agentIdentity()`, `serviceIdentity()`), which
+  is unchanged.
 - **`core/authz`'s `ROLE_ACTIONS` table is coarse** - it does not yet grant
   an AGENT identity access to only *specific* tools (e.g. "agent X may call
   tool Y but not Z"); that per-tool/per-agent grant matrix is future work.

@@ -5,6 +5,7 @@ import { Router } from "express";
 import { prisma } from "../../../../database/client";
 import { verifyPassword } from "../../../../core/auth/password";
 import { createSession, revokeSession } from "../../../../core/auth/session";
+import { identityFromUser } from "../../../../core/auth/identity";
 import { checkLoginRate } from "../../../../core/limits";
 import { log } from "../../../../security/logger";
 import { requireAuth } from "../middleware/auth";
@@ -46,12 +47,28 @@ authRouter.post("/login", async (req, res) => {
     return;
   }
 
+  // The identity a login grants is derived the SAME way validateSession()
+  // derives it later (from the User row's real `role`/`active` columns) -
+  // never hardcoded. An inactive account or a corrupted/unrecognized role
+  // fails closed as a generic "invalid credentials", not a different error,
+  // so login never reveals account state to an unauthenticated caller.
+  const identity = identityFromUser(user);
+  if (!identity) {
+    log("SECURITY", "auth.login_rejected_invalid_role_or_inactive", {
+      userId: user.id,
+      role: user.role,
+      active: user.active,
+    });
+    res.status(401).json({ error: "Invalid credentials." });
+    return;
+  }
+
   const session = await createSession(user.id);
-  log("SECURITY", "auth.login_success", { userId: user.id });
+  log("SECURITY", "auth.login_success", { userId: user.id, role: identity.kind });
   res.json({
     token: session.token,
     expiresAt: session.expiresAt,
-    identity: { kind: "OWNER", id: user.id, label: `owner:${user.email}` },
+    identity,
   });
 });
 

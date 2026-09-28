@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import { prisma } from "../../database/client";
 import { log } from "../../security/logger";
 import type { Identity } from "./identity";
-import { ownerIdentity } from "./identity";
+import { identityFromUser } from "./identity";
 
 const DEFAULT_SESSION_TTL_HOURS = 24 * 7; // 7 days
 
@@ -52,9 +52,15 @@ export async function createSession(userId: string): Promise<CreatedSession> {
 
 /**
  * Validates a raw token: looks it up by its hash, checks it hasn't been
- * revoked or expired, updates lastUsedAt, and returns the corresponding
- * Identity - or null if the token is missing/invalid/expired/revoked.
- * Never throws on a bad token; a bad token is just "not authenticated".
+ * revoked or expired, confirms the owning User still exists and is active,
+ * then derives the Identity from that User's stored `role` column (the
+ * authoritative source - see identityFromUser). Updates lastUsedAt and
+ * returns the Identity, or null if the token is missing/invalid/expired/
+ * revoked, the user is inactive, or the stored role is not a recognized
+ * IdentityKind. The role is re-read from the database on every call (the
+ * session itself carries no cached identity), so changing User.role takes
+ * effect on the very next request - there is no identity cache to go stale.
+ * Never throws on a bad token/role; either is just "not authenticated".
  */
 export async function validateSession(rawToken: string | undefined | null): Promise<Identity | null> {
   if (!rawToken || typeof rawToken !== "string" || rawToken.trim() === "") return null;
@@ -68,13 +74,24 @@ export async function validateSession(rawToken: string | undefined | null): Prom
   if (!session) return null;
   if (session.revokedAt) return null;
   if (session.expiresAt.getTime() <= Date.now()) return null;
+  if (!session.user) return null;
+
+  const identity = identityFromUser(session.user);
+  if (!identity) {
+    log("SECURITY", "auth.session_rejected_invalid_role_or_inactive", {
+      userId: session.user.id,
+      role: session.user.role,
+      active: session.user.active,
+    });
+    return null;
+  }
 
   await prisma.session.update({
     where: { id: session.id },
     data: { lastUsedAt: new Date() },
   });
 
-  return ownerIdentity(session.user.id, session.user.email);
+  return identity;
 }
 
 /** Revokes the session identified by its raw token (logout). Idempotent - revoking an already-revoked/unknown token is a no-op. */

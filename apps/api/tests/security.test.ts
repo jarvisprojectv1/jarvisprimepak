@@ -97,30 +97,75 @@ describe("Security (Phase 3): auth, authz, audit, emergency stop", () => {
   });
 
   it("a role lacking authorization is rejected on a role-gated route (system mutation requires OWNER)", async () => {
-    // A SYSTEM/AGENT identity has no login flow, so we simulate the coarse
-    // authz check directly against core/authz for a non-OWNER kind, and
-    // confirm the HTTP route also requires OWNER specifically by checking a
-    // non-owner-role user is rejected end to end.
+    // The session's Identity.kind is now derived from the User row's real
+    // `role` column (core/auth/identity.identityFromUser), not hardcoded to
+    // OWNER - so a SERVICE-role user's session genuinely resolves to a
+    // SERVICE identity, and the OWNER-only /system/pause route must reject it.
     const nonOwnerEmail = `non-owner-${Date.now()}@example.com`;
     const passwordHash = await hashPassword("Whatever-1!");
     const nonOwnerUser = await prisma.user.create({ data: { email: nonOwnerEmail, role: "SERVICE", passwordHash } });
-    // Sessions always resolve to an OWNER Identity by construction (see
-    // core/auth/session.ts) since only User rows log in via HTTP - this
-    // proves SERVICE/AGENT/SYSTEM cannot reach system-mutation routes at all
-    // via the HTTP login path, which is the intended design (see
-    // docs/PHASE3_IDENTITY_EVENTS.md).
     const session = await createSession(nonOwnerUser.id);
     const app = createApp();
+
+    const me = await request(app).get("/auth/me").set(...authHeader(session.token));
+    expect(me.body.identity.kind).toBe("SERVICE");
+
     const res = await request(app)
       .post("/system/pause")
       .set(...authHeader(session.token))
       .send({});
-    // The session resolves to an OWNER identity regardless of the User.role
-    // column (Phase 3's session model only mints OWNER identities via HTTP
-    // login) - so this documents the current boundary rather than testing a
-    // non-owner HTTP login, which does not exist. The authoritative
-    // role-authorization test is the core/authz unit suite.
-    expect([200, 403]).toContain(res.status);
+    expect(res.status).toBe(403);
+  });
+
+  it("a non-OWNER cannot perform an OWNER-only operation even by forging a role/actor field in the request body", async () => {
+    const agentEmail = `agent-role-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword("Whatever-1!");
+    const agentUser = await prisma.user.create({ data: { email: agentEmail, role: "AGENT", passwordHash } });
+    const session = await createSession(agentUser.id);
+    const app = createApp();
+
+    const res = await request(app)
+      .post("/system/emergency-stop")
+      .set(...authHeader(session.token))
+      // Forged fields claiming OWNER must be completely ignored - the
+      // server derives identity solely from the validated session.
+      .send({ reason: "test", role: "OWNER", actor: "owner:fake@example.com", identity: { kind: "OWNER" } });
+    expect(res.status).toBe(403);
+
+    const state = await request(app).get("/system/state").set(...authHeader(owner.token));
+    expect(state.body.state).not.toBe("EMERGENCY_STOP");
+  });
+
+  it("changing a user's role in the database changes effective authorization on the very next request (no identity cache)", async () => {
+    const email = `role-flip-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword("Whatever-1!");
+    const user = await prisma.user.create({ data: { email, role: "AGENT", passwordHash } });
+    const session = await createSession(user.id);
+    const app = createApp();
+
+    const before = await request(app).post("/system/pause").set(...authHeader(session.token)).send({});
+    expect(before.status).toBe(403);
+
+    await prisma.user.update({ where: { id: user.id }, data: { role: "OWNER" } });
+
+    const after = await request(app).post("/system/pause").set(...authHeader(session.token)).send({});
+    expect(after.status).toBe(200);
+    await request(app).post("/system/resume").set(...authHeader(session.token)).send({});
+  });
+
+  it("an inactive user's session is rejected even with a valid, unexpired token", async () => {
+    const email = `deactivated-${Date.now()}@example.com`;
+    const passwordHash = await hashPassword("Whatever-1!");
+    const user = await prisma.user.create({ data: { email, role: "OWNER", passwordHash, active: true } });
+    const session = await createSession(user.id);
+    const app = createApp();
+
+    expect((await request(app).get("/auth/me").set(...authHeader(session.token))).status).toBe(200);
+
+    await prisma.user.update({ where: { id: user.id }, data: { active: false } });
+
+    const res = await request(app).get("/auth/me").set(...authHeader(session.token));
+    expect(res.status).toBe(401);
   });
 
   it("an authenticated-but-unauthorized action is rejected (tool.execute requires requireAuthz, not just a session)", async () => {

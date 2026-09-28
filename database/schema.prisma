@@ -21,7 +21,8 @@ model User {
   id           String   @id @default(uuid())
   email        String   @unique
   name         String?
-  role         String   @default("OWNER") // OWNER | SYSTEM | AGENT | SERVICE (see core/auth/identity.ts)
+  role         String   @default("OWNER") // OWNER | SYSTEM | AGENT | SERVICE (see core/auth/identity.ts) - authoritative for the identity a session resolves to
+  active       Boolean  @default(true) // false = account disabled; sessions for an inactive user fail closed
   passwordHash String? // bcrypt hash; null until a login flow creates one (e.g. the owner seed script)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
