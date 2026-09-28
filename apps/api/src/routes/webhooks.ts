@@ -29,8 +29,25 @@ import { verifyWebhookSignature, normalizeInboundWebhookPayload } from "../../..
 import { verifyTwilioSignature, normalizeInboundVoiceWebhook } from "../../../../core/voice/webhook";
 import { publish } from "../../../../core/events";
 import { log } from "../../../../security/logger";
+import { createRateLimiter } from "../middleware/rateLimit";
 
 export const webhooksRouter = Router();
+
+// Phase 12 (item 11): these are the system's only UNAUTHENTICATED-by-session
+// public endpoints (authenticated by provider signature instead - see the
+// file header above), and previously had NO request-volume protection at
+// all. A generous per-IP limit (well above real Meta/Twilio traffic for this
+// business's volume) that still blunts a flood/abuse attempt hitting an
+// endpoint that does real work (signature verification is cheap, but a
+// flood of even-rejected requests is still unwanted load). Does NOT touch
+// core/whatsapp/webhook.ts or core/voice/webhook.ts (the signature
+// verification itself, on the enforcement-critical file list) - this is a
+// request-volume gate applied BEFORE the route handler, not a change to how
+// a signature is verified.
+const whatsappLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: "webhooks.whatsapp" });
+const voiceLimiter = createRateLimiter({ windowMs: 60_000, max: 120, name: "webhooks.voice" });
+webhooksRouter.use("/whatsapp", whatsappLimiter.middleware);
+webhooksRouter.use("/voice", voiceLimiter.middleware);
 
 webhooksRouter.get("/whatsapp", (req, res) => {
   const mode = req.query["hub.mode"];

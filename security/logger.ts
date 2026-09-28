@@ -6,6 +6,12 @@ import pino from "pino";
 import { appConfig } from "../config/env";
 import { redact } from "./redact";
 import { prisma } from "../database/client";
+// Phase 12 (item 7): request/correlation id, when this log call happens
+// inside an HTTP request (AsyncLocalStorage - see security/context.ts and
+// its Express middleware, apps/api/src/middleware/requestContext.ts).
+// Outside a request (scheduler, worker, tests) this is simply undefined and
+// omitted - never a fabricated id.
+import { getRequestId } from "./context";
 
 export type LogCategory =
   | "INFO"
@@ -59,16 +65,22 @@ export function log(
   meta?: Record<string, unknown>
 ): void {
   const safeMeta = meta ? redact(meta) : undefined;
-  pinoLogger[levelFor(category)]({ category, ...safeMeta }, message);
+  const requestId = getRequestId();
+  const logPayload = requestId ? { category, requestId, ...safeMeta } : { category, ...safeMeta };
+  pinoLogger[levelFor(category)](logPayload, message);
 
   if (PERSISTED_CATEGORIES.has(category)) {
-    // Fire-and-forget: logging must never block or crash the caller.
+    // Fire-and-forget: logging must never block or crash the caller. The
+    // request id (if any) rides inside the existing `meta` JSON blob rather
+    // than a new column, so this stays a purely additive change to
+    // SystemLog's stored shape.
+    const persistedMeta = requestId ? { ...safeMeta, requestId } : safeMeta;
     prisma.systemLog
       .create({
         data: {
           category,
           message,
-          meta: safeMeta ? JSON.stringify(safeMeta) : null,
+          meta: persistedMeta ? JSON.stringify(persistedMeta) : null,
         },
       })
       .catch((err) => {

@@ -18,11 +18,31 @@ import { skillsRouter } from "./routes/skills";
 import { crmRouter } from "./routes/crm";
 import { approvalsRouter } from "./routes/approvals";
 import { webhooksRouter } from "./routes/webhooks";
+import { requestContext } from "./middleware/requestContext";
+import { enforceHttps } from "./middleware/enforceHttps";
 import { log } from "../../../security/logger";
 
 export function createApp(): Express {
   const app = express();
+  // Phase 12 (item 10): only trust X-Forwarded-* headers (proto, for
+  // enforceHttps(); ip, for rate limiting) from exactly ONE hop in front of
+  // this process - the reverse proxy documented in deploy/. TRUST_PROXY_HOPS
+  // defaults to 0 (trust nothing, req.ip is the raw socket address) so a
+  // deployment that forgets to set this does NOT accidentally trust a
+  // client-spoofable header.
+  const trustProxyHops = parseInt(process.env.TRUST_PROXY_HOPS ?? "0", 10);
+  if (Number.isFinite(trustProxyHops) && trustProxyHops > 0) {
+    app.set("trust proxy", trustProxyHops);
+  }
   app.use(cors());
+  // Phase 12 (item 7): a request/correlation id on every request, before
+  // anything else runs (so even a body-parse failure or 404 still carries
+  // one). See apps/api/src/middleware/requestContext.ts.
+  app.use(requestContext());
+  // Phase 12 (item 10): optional, off-by-default HTTPS enforcement - see
+  // apps/api/src/middleware/enforceHttps.ts for why it's disabled unless
+  // FORCE_HTTPS=true and how it depends on TRUST_PROXY_HOPS above.
+  app.use(enforceHttps());
   // Phase 8 (item 5): the raw request body bytes are captured onto
   // `req.rawBody` here, alongside JSON parsing, SPECIFICALLY so
   // apps/api/src/routes/webhooks.ts can verify the WhatsApp Cloud API's
@@ -89,7 +109,13 @@ export function createApp(): Express {
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const message = err instanceof Error ? err.message : "Internal server error";
     log("ERROR", "api.unhandled_error", { error: message });
-    res.status(500).json({ error: "Internal server error." });
+    // Phase 12 (item 7): X-Request-Id is already set on the response by
+    // requestContext() before this handler runs (headers set earlier in the
+    // pipeline survive into the error handler) - included in the body too so
+    // a client reporting "error X" can be matched to server logs without
+    // digging through response headers.
+    const requestId = res.getHeader("X-Request-Id");
+    res.status(500).json({ error: "Internal server error.", requestId: typeof requestId === "string" ? requestId : undefined });
   });
 
   return app;
