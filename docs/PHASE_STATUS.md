@@ -203,3 +203,82 @@ WHAT SHOULD BE BUILT NEXT
   apps/desktop) - both explicitly scoped to Phase 4 in the spec.
 - Lead enrichment for agents/crm-agent.ts and open-web research for
   agents/research-agent.ts, once a data/search provider is chosen.
+
+PHASE 3 UPDATE (IDENTITY & EVENTS) — see docs/PHASE3_IDENTITY_EVENTS.md for
+full detail; summary below.
+
+NEWLY IMPLEMENTED
+- core/auth: real authentication. bcrypt password hashing (12 rounds),
+  server-side revocable sessions (new `Session` table - raw token returned
+  once, only its SHA-256 hash persisted), a channel-agnostic `Identity` type
+  (OWNER | SYSTEM | AGENT | SERVICE) used everywhere downstream instead of a
+  bare string, and `scripts/seed-owner.ts` (`npm run seed:owner`) as the
+  ONLY way to create the OWNER account - no HTTP endpoint can self-elevate.
+- apps/api/src/middleware/auth.ts + apps/api/src/routes/auth.ts: bearer-
+  token auth middleware (`requireAuth`, `requireRole`, `requireAuthz`),
+  POST /auth/login (rate-limited, generic invalid-credentials error that
+  never reveals which field was wrong), POST /auth/logout, GET /auth/me.
+  Every route except GET /health and POST /auth/login now requires
+  authentication; /system mutation routes require OWNER specifically.
+- core/authz: Owner Command Authority - a coarse, role-based "is this
+  identity allowed to request this kind of action at all" gate, explicitly
+  separate from core/policy's action-content-based AUTONOMOUS/NOTIFY/
+  BLOCKED classification. Runs before core/enforcement's existing gate.
+  Being OWNER-authorized to request an action never overrides a hardcoded
+  BLOCKED policy outcome (proven in apps/api/tests/security.test.ts).
+- core/enforcement: guardToolExecution/guardAgentExecution now accept an
+  optional Identity and derive the audit `actor` from it
+  (identityToActorString), defaulting to SYSTEM_IDENTITY - the old
+  hardcoded `actor: "system"` string is gone from every code path.
+- core/notifications: a real Notification Service (Repository -> Service ->
+  Dispatcher). Exactly one real delivery channel (DashboardChannel,
+  persists for the web dashboard to poll); Desktop/Email/WhatsApp/SMS/
+  Phone/Push channels are honest NOT_IMPLEMENTED stubs. Replaces
+  core/enforcement's old ad-hoc direct-Prisma createNotification() helper.
+  New GET /notifications, PATCH /notifications/:id/read routes.
+- core/events: typed event categories (SYSTEM/SCHEDULE/USER/TASK/AGENT/CRM/
+  NOTIFICATION implemented with payload shape validation; EMAIL/WEB/MARKET/
+  VOICE/CALENDAR reserved, no source built) with validation (publish()
+  rejects an unknown-category or malformed-payload typed event) and routing
+  (a typed event is run through core/conditions after being persisted and
+  notifying subscribers) - legacy lowercase event types remain unvalidated
+  for backward compatibility with Phase 1/2 code.
+- core/conditions: a declarative condition engine (all/any/not/{field,op,
+  value}, operators eq/neq/gt/gte/lt/lte/in/contains) that NEVER uses eval
+  or new Function, fails closed on malformed/unknown-operator input, and
+  explicitly blocks __proto__/prototype/constructor field traversal. Rules
+  are DATA in a new `ConditionRule` table; two real, seeded examples wired
+  end-to-end (CRM new-hot-lead -> research task; SCHEDULE morning-briefing
+  -> briefing task), both via core/planner.planTask().
+- scheduler/index.ts: cron jobs now publish a typed SCHEDULE.fired event
+  instead of running business logic directly in the cron callback; new
+  AutomationRun execution-history table; duplicate-execution prevention;
+  bounded retry via core/limits; explicit per-job timezone (default UTC);
+  best-effort missed-schedule detection at registration; live enable/
+  disable (Scheduler.setEnabled, new /system/scheduler/:name/enable|disable
+  routes) that survives a simulated process restart by honoring the
+  persisted `enabled` flag.
+- core/health: ten real component checks (api, database, scheduler, event
+  bus, task queue, agents, tool registry, memory, disk, CPU/memory) behind
+  GET /system/health (requires authentication - task/agent counts are
+  business-sensitive). Disk uses fs.statfs (works in this sandbox) with an
+  honest UNKNOWN fallback rather than a fabricated number.
+- 51 new tests (core/auth, core/authz, core/notifications, core/conditions,
+  core/health, extended core/events, extended scheduler, and a new
+  apps/api/tests/security.test.ts covering the full required security
+  checklist) - 126/126 tests passing in total (up from 75/75 in Phase 2).
+
+WHAT SHOULD BE BUILT NEXT
+- A real per-tool/per-agent grant matrix for AGENT/SERVICE identities in
+  core/authz, plus an actual internal-service credential mechanism (they are
+  code-only constants today, with no HTTP login flow of their own).
+- Real event sources for the still-reserved categories (CRM, EMAIL, WEB,
+  MARKET, VOICE, CALENDAR) - only the scheduler and manual/test publishes
+  produce typed events right now.
+- A real cron-expression parser for accurate missed-schedule detection
+  (today's check uses rough per-trigger-type cadence hints).
+- More condition-engine actionType kinds beyond create_task (e.g.
+  send_notification, run_agent).
+- Voice/telephony, browser/computer automation, real email/calendar/web
+  search integrations - unchanged from Phase 1/2's scope (explicitly out of
+  scope here too, per the non-negotiables in docs/PHASE3_IDENTITY_EVENTS.md).
