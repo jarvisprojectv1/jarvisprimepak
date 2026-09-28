@@ -629,3 +629,86 @@ WHAT SHOULD BE BUILT NEXT (as of Phase 6.1)
 - The synthesis step is only wired into `agents/research-agent.ts`, not
   `agents/market-agent.ts` (same plumbing, not touched here - out of scope
   for this phase's narrow gap).
+
+PHASE 7: EMAIL & CRM - see docs/PHASE7_EMAIL_CRM.md for the full writeup.
+- New `tools/email/`: a real `EmailProvider` abstraction. `GmailProvider`
+  (Gmail API v1, list/get/send) is implemented but UNTESTED against the
+  live API (no credentials in this sandbox, same honesty pattern as Phase
+  6's `BraveSearchProvider`) - `CONFIGURATION_REQUIRED` without
+  `GMAIL_ACCESS_TOKEN`/`GMAIL_USER_EMAIL`. `MockEmailProvider` is the ONLY
+  provider the automated test suite ever sends through - zero live email
+  capability is exercised by `npm test`.
+- `core/crm/`: dedup (company by domain, contact by normalized email, lead
+  by open company+contact - ambiguous matches flagged `possibleDuplicate`,
+  never auto-merged/dropped), deterministic `qualifyLead()` (always
+  `qualified: true|false|"UNKNOWN"` + `reasons[]`, never an opaque number),
+  `ProductCategory` business-config data table, and
+  `runLeadResearchWorkflow()` - a real research -> CRM -> qualify ->
+  next-action task tree (traceable the same way Phase 5.1's `rootTaskId`
+  pattern proved for the Brain's own delegation).
+- `core/business/`: `outboundPolicy.ts` (data-driven HIGH/LOW risk
+  classification feeding `core/decision_engine`/`core/policy` **unmodified**
+  via their existing `irreversible`/`monetaryValue` fields), `antiSpam.ts`
+  (suppression list checked BEFORE risk classification, per-account/
+  per-domain daily limits, per-contact cooldown, all `Setting`-backed),
+  `idempotency.ts` (hash-derived key, DB-unique-constrained
+  `OutboundSendLog`), `emailClassification.ts` (deterministic, no LLM cost),
+  `emailDraft.ts` (template-based - only ever cites configured
+  `ProductCategory` facts or an explicit placeholder, with a general-purpose
+  `validateDraftGrounding()` hallucination check), `quote.ts` (costing only
+  from configured rules; `markQuoteSent()` is the ONLY function anywhere
+  that can set `Quote.status = "SENT"`, and it hard-requires an APPROVED
+  `ApprovalRequest`), `followUp.ts` (the guard every follow-up must pass:
+  intervening reply / suppression / cancelled task / pause / emergency
+  stop).
+- New `core/approvals/`: the Owner Approval Queue
+  (`PENDING -> APPROVED|REJECTED|EXPIRED`). Approving/rejecting NEVER
+  mutates `proposedContent`; every decision writes a real `AuditLog` row.
+  `POST /approvals/:id/approve|reject` require `approval.decide`, granted
+  ONLY to OWNER.
+- **The single most safety-critical guarantee, proven, not just claimed**:
+  `agents/no-autonomous-highrisk-send.test.ts` shows there is no code path
+  - forged approval id, REJECTED approval, EXPIRED approval, or no approval
+  at all - by which a HIGH-RISK outbound email reaches
+  `EmailProvider.sendMessage()` without a prior, genuinely APPROVED
+  `ApprovalRequest`; a `grep`-based check (comments excluded) confirms
+  `tools/email/emailTool.ts` is the only file in the codebase that calls
+  `.sendMessage(` at all.
+- CRM schema extended additively (migration
+  `20260928105050_phase7_email_crm`): `Contact`/`Company` dedup fields,
+  `Lead.researchRunId`/`qualification`/extended `status`,
+  `Communication` reused as the CRM activity feed,
+  `Email` idempotency/threading/classification fields, `Quote`
+  extended `status`/`totalIsComputed`, plus new `SuppressedContact`,
+  `OutboundSendLog`, `ApprovalRequest`, `ProductCategory` tables.
+- `core/reports/dailyReport.ts` gained an additive `emailCrm` section
+  (real send/receive/approval/lead-pipeline counts, honest
+  `emailProviderConfigured: false` note when unconfigured); new
+  `GET /crm/dashboard` route, every field a live DB aggregate.
+- 420/420 tests passing (up from 318/318 after Phase 6.1): 318 existing +
+  102 new, across 16 new test files. Root and `apps/api` typechecks both
+  clean. `git diff --stat` against the pre-Phase-7 commit shows
+  `core/enforcement/`, `tools/registry.ts`, `agents/registry.ts`,
+  `core/state/`, `core/limits/`, `core/ai/costControl.ts`,
+  `core/worker/claim.ts`, and `core/decision_engine/` all at ZERO diff;
+  `core/policy/index.ts`'s only change is two additive lookup-table entries.
+- Deliberately deferred this phase (see docs/PHASE7_EMAIL_CRM.md
+  "Deviations" for the full reasoning): AI-assisted (LLM) email
+  classification/drafting (deterministic/template-based instead, which
+  already satisfies every hard safety requirement with less risk),
+  follow-up task creation wired into `scheduler/index.ts` (the safety GATE
+  is built and tested; the cron trigger that would create follow-up tasks
+  is not).
+
+WHAT SHOULD BE BUILT NEXT (as of Phase 7)
+- Live Gmail OAuth credentials + token refresh, to move `GmailProvider`
+  from "implemented, untested live" to genuinely verified.
+- An LLM-assisted email classification/drafting variant following
+  `core/research/synthesis.ts`'s exact trust-boundary/grounding pattern
+  (`core/business/emailDraft.ts`'s `validateDraftGrounding()` was built
+  general-purpose specifically so this slots in cleanly).
+- Wiring `core/business/followUp.ts`'s guard into an actual scheduled
+  follow-up-creation job in `scheduler/index.ts`.
+- Everything still open from Phase 6/6.1 (live `BraveSearchProvider`
+  credentials, a real skill-code sandbox, a semantic cross-source
+  comparator) remains unchanged and open.
