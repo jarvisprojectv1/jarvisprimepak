@@ -4,6 +4,7 @@
 // tools" true: tools implement the `Tool` interface, register themselves
 // here, and the orchestrator (or an agent) invokes them by name.
 import { log } from "../security/logger";
+import { guardToolExecution } from "../core/enforcement";
 
 export interface ToolInputSchema {
   /** JSON-schema-ish description, kept simple for Phase 1. */
@@ -12,7 +13,14 @@ export interface ToolInputSchema {
   required?: string[];
 }
 
-export type ToolStatus = "OK" | "NOT_IMPLEMENTED" | "CONFIGURATION_REQUIRED" | "ERROR";
+export type ToolStatus =
+  | "OK"
+  | "NOT_IMPLEMENTED"
+  | "CONFIGURATION_REQUIRED"
+  | "ERROR"
+  // Set only by the enforcement gate (core/enforcement) when the Autonomy
+  // Policy Engine or the global/per-tool state gate refuses to run the tool.
+  | "BLOCKED";
 
 export interface ToolResult {
   status: ToolStatus;
@@ -34,6 +42,14 @@ export class ToolRegistry {
     if (this.tools.has(tool.name)) {
       throw new Error(`Tool "${tool.name}" is already registered.`);
     }
+    // Mutate the tool object's own `execute` in place so that EVERY caller
+    // - the registry's own execute() below, apps/api routes, the scheduler,
+    // or an agent that imported the tool module directly and holds a
+    // reference to the same object - goes through the enforcement gate
+    // (system state -> per-tool disable -> rate limits -> policy engine).
+    // There is no unguarded `tool.execute` left to call once this returns.
+    const original = tool.execute.bind(tool);
+    tool.execute = guardToolExecution(tool.name, original);
     this.tools.set(tool.name, tool);
   }
 

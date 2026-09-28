@@ -212,8 +212,12 @@ model Task {
   id          String    @id @default(uuid())
   title       String
   description String?
-  status      String    @default("PENDING") // PENDING | IN_PROGRESS | BLOCKED | DONE | FAILED
+  // Phase 2 (Autonomy Core) status set, reconciling the Phase 1 set with the
+  // spec addendum's QUEUED/WAITING/CANCELLED/RETRYING states:
+  // PENDING | QUEUED | IN_PROGRESS | WAITING | BLOCKED | RETRYING | DONE | FAILED | CANCELLED
+  status      String    @default("PENDING")
   priority    String    @default("NORMAL") // LOW | NORMAL | HIGH | URGENT
+  retryCount  Int       @default(0)
   ownerId     String?
   parentId    String?
   dueAt       DateTime?

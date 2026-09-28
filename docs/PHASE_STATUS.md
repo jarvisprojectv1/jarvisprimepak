@@ -124,6 +124,56 @@ WHAT DEPENDENCIES ARE REQUIRED
   WHATSAPP_BUSINESS_TOKEN (telephony/messaging), BROWSERBASE_API_KEY
   (browser automation).
 
+PHASE 2 / STEP 3 UPDATE (AUTONOMY CORE) — see docs/PHASE2_AUTONOMY.md for
+full detail; summary below.
+
+NEWLY IMPLEMENTED
+- core/policy: the Autonomy Policy Engine. evaluatePolicy() calls the
+  existing core/decision_engine.classify() and maps its DecisionCategory
+  onto AUTONOMOUS | NOTIFY | BLOCKED. BLOCKED is a hardcoded, non-runtime-
+  configurable list (financial transactions/trading, password/security
+  changes, destructive data operations, legal commitments, account
+  deletion, security-control bypasses) that no setting or agent claim can
+  override.
+- core/enforcement: the single gate every tool execution and agent run
+  passes through. tools/registry.ts's ToolRegistry.register() and
+  agents/registry.ts's registerAgent() now mutate the tool/agent object's
+  own execute()/run() in place, so there is no unguarded code path left,
+  even for a caller holding a direct reference to the tool/agent object.
+  Order: system-state gate -> per-agent/per-tool pause/disable -> rate/
+  concurrency limits -> policy engine. BLOCKED short-circuits with zero
+  execution; NOTIFY executes and creates a Notification row; every outcome
+  (allowed or blocked) is written to the audit log (writeAuditLog, which was
+  implemented in Phase 1 but genuinely called from nowhere until now).
+- core/state: Global JARVIS System State (RUNNING | PAUSED | MAINTENANCE |
+  DEGRADED | EMERGENCY_STOP), persisted via the existing `settings` table.
+  Per-agent pause/resume, per-tool disable/enable, emergencyStop() (pauses
+  every registered agent and disables every registered tool), and a safe
+  recover() that returns to RUNNING without auto-resuming anything. New API
+  routes: apps/api/src/routes/system.ts (GET /system/state, POST
+  /system/pause|resume|emergency-stop, POST /system/agents/:name/
+  pause|resume, POST /system/tools/:name/disable|enable).
+- core/limits: in-process, per-tool/per-agent rolling-window rate limits,
+  a global concurrent-agent limit, a retry limit, and a daily task limit -
+  configurable via `settings` (key limits.config) with sane defaults, not
+  distributed (see docs/PHASE2_AUTONOMY.md).
+- core/events: a minimal in-process event bus (publish/subscribe), backed
+  by the existing `events` table. One real path is wired end-to-end as
+  proof of EVENT -> DECISION: the scheduler publishes "scheduler.fired" on
+  every job run and the planner publishes "task.created"; a default
+  subscriber runs both through evaluatePolicy() and logs the result.
+  scheduler/index.ts's event/condition trigger types are still interfaces
+  only (no dispatcher) beyond this one proof-of-pipe.
+- core/planner + core/tasks: Task.status extended to PENDING | QUEUED |
+  IN_PROGRESS | WAITING | BLOCKED | RETRYING | DONE | FAILED | CANCELLED
+  (migration `task_retry_and_autonomy`, which also added Task.retryCount).
+  core/tasks.recoverUnfinishedTasks() runs once at API boot
+  (apps/api/src/index.ts) and moves any task still IN_PROGRESS from a dead
+  previous process to RETRYING or FAILED, honestly logged.
+- 45 new tests across core/policy, core/state, core/limits, core/events,
+  core/enforcement, core/tasks, and two new apps/api smoke tests (system
+  routes) - 75/75 tests passing in total (up from 30/30 in Phase 1).
+
 WHAT SHOULD BE BUILT NEXT
 - Phase 2 integrations behind the existing tool stubs: a real SMTP client for
   tools/email.ts, a Google Calendar OAuth flow for tools/calendar.ts, and a
@@ -137,9 +187,14 @@ WHAT SHOULD BE BUILT NEXT
   placeholder).
 - An authentication layer (the `users` table and `role` field already exist)
   before this is exposed to more than one trusted operator.
-- An event bus (for event-triggered automations) and a condition-evaluation
-  engine (for condition-triggered automations) - scheduler/index.ts already
-  has the typed interface waiting for both.
+- A minimal event bus foundation now exists (core/events, with one real
+  scheduler/planner -> policy path wired as proof); still needed: a
+  condition-evaluation engine for condition-triggered automations, and real
+  event *sources* (CRM changes, inbound email, web monitoring) publishing
+  into the bus instead of just the scheduler/planner proof-of-pipe.
+- Authentication + tying the audit log's `actor` field to a real logged-in
+  user instead of a self-reported request field, now that writeAuditLog is
+  wired into every tool/agent execution path.
 - Voice (STT/TTS) and telephony integration behind tools/voice.ts, once a
   concrete provider (e.g. Twilio + a speech API) is chosen - this unlocks
   cold-calling, which the spec treats as a headline Phase 2/3 feature.

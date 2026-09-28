@@ -5,11 +5,16 @@
 // which are themselves just seed data written through the same interface).
 // Supported trigger types: one_time, daily, weekly, monthly, interval,
 // event-triggered, condition-triggered. Phase 1 wires up cron-based triggers
-// (daily/weekly/monthly/interval) for real; event/condition triggers are
-// interfaces only (no event bus / condition engine yet).
+// (daily/weekly/monthly/interval) for real; event/condition trigger types are
+// still interfaces only in Phase 2 - a minimal event bus now exists
+// (core/events) and every cron-fired job publishes a "scheduler.fired" event
+// onto it as a proof-of-pipe, but there is still no condition-evaluation
+// engine and the scheduler does not yet dispatch jobs *off of* published
+// events.
 import cron, { type ScheduledTask } from "node-cron";
 import { prisma } from "../database/client";
 import { log } from "../security/logger";
+import { publish } from "../core/events";
 
 export type TriggerType =
   | "one_time"
@@ -54,7 +59,7 @@ export class Scheduler {
     if (!CRON_TRIGGER_TYPES.includes(job.triggerType)) {
       log("INFO", `scheduler.register:${job.name}`, {
         triggerType: job.triggerType,
-        note: "event/one_time/condition triggers are interfaces only in Phase 1 (no event bus / condition engine yet).",
+        note: "event/one_time/condition trigger types are interfaces only (no dispatcher/condition engine wired to them yet).",
       });
       return;
     }
@@ -73,6 +78,10 @@ export class Scheduler {
     const task = cron.schedule(job.schedule, async () => {
       log("ACTION", `scheduler.fire:${job.name}`);
       try {
+        // Proof-of-pipe: EVENT -> DECISION (see core/events'
+        // registerDefaultSubscribers, which classifies this via the policy
+        // engine). This is the one real wired event-bus path for Phase 2.
+        await publish({ type: "scheduler.fired", payload: { jobName: job.name }, source: "scheduler" });
         await job.handler();
         await prisma.automation.update({
           where: { name: job.name },

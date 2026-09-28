@@ -1,13 +1,18 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import request from "supertest";
 import { createApp } from "../src/app";
 import { registerBuiltinTools } from "../../../tools";
 import { registerBuiltinAgents } from "../../../agents/registry";
+import { setSystemState } from "../../../core/state";
 
 describe("API smoke tests", () => {
   beforeAll(() => {
     registerBuiltinTools();
     registerBuiltinAgents();
+  });
+
+  afterEach(async () => {
+    await setSystemState("RUNNING", "test cleanup", "test");
   });
 
   it("GET /health returns ok", async () => {
@@ -41,5 +46,34 @@ describe("API smoke tests", () => {
     const names = res.body.map((t: { name: string }) => t.name);
     expect(names).toContain("files");
     expect(names).toContain("browser");
+  });
+
+  it("GET /system/state reports RUNNING by default", async () => {
+    const app = createApp();
+    const res = await request(app).get("/system/state");
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe("RUNNING");
+  });
+
+  it("POST /system/pause blocks a subsequent tool execution, /system/resume unblocks it", async () => {
+    const app = createApp();
+
+    const pauseRes = await request(app).post("/system/pause").send({ reason: "api test" });
+    expect(pauseRes.status).toBe(200);
+    expect(pauseRes.body.state).toBe("PAUSED");
+
+    const blockedResult = await request(app)
+      .post("/tools/files/execute")
+      .send({ action: "list", path: "." });
+    expect(blockedResult.body.status).toBe("BLOCKED");
+
+    const resumeRes = await request(app).post("/system/resume").send({});
+    expect(resumeRes.status).toBe(200);
+    expect(resumeRes.body.state).toBe("RUNNING");
+
+    const okResult = await request(app)
+      .post("/tools/files/execute")
+      .send({ action: "list", path: "." });
+    expect(okResult.body.status).not.toBe("BLOCKED");
   });
 });

@@ -7,11 +7,23 @@ import { registerBuiltinTools } from "../../../tools";
 import { registerBuiltinAgents } from "../../../agents/registry";
 import { registerExampleJobs } from "../../../scheduler";
 import { log } from "../../../security/logger";
+import { recoverUnfinishedTasks } from "../../../core/tasks";
+import { registerDefaultSubscribers } from "../../../core/events";
 
 async function main() {
   applyPendingMigrations();
   registerBuiltinTools();
   registerBuiltinAgents();
+  registerDefaultSubscribers();
+
+  try {
+    const recovery = await recoverUnfinishedTasks();
+    log("INFO", "boot.task_recovery", { ...recovery });
+  } catch (err) {
+    log("WARNING", "boot.task_recovery_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   try {
     await registerExampleJobs();

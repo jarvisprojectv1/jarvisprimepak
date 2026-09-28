@@ -8,6 +8,7 @@ import { toolsRouter } from "./routes/tools";
 import { agentsRouter } from "./routes/agents";
 import { tasksRouter } from "./routes/tasks";
 import { memoryRouter } from "./routes/memory";
+import { systemRouter } from "./routes/system";
 
 export function createApp(): Express {
   const app = express();
@@ -20,6 +21,7 @@ export function createApp(): Express {
   app.use("/agents", agentsRouter);
   app.use("/tasks", tasksRouter);
   app.use("/memory", memoryRouter);
+  app.use("/system", systemRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: `No route for ${req.method} ${req.path}` });
