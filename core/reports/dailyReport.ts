@@ -47,6 +47,18 @@ export interface DailyReportContent {
     newWebResultsToday: number;
     note: string;
   };
+  // Phase 7 (Email & CRM, item 25): real counts only - a category with
+  // nothing to report says so explicitly, never fabricated.
+  emailCrm: {
+    emailProviderConfigured: boolean;
+    emailsSentToday: number;
+    emailsReceivedToday: number;
+    newLeadsFromResearchToday: number;
+    pendingApprovals: number;
+    approvalsDecidedToday: number;
+    leadsByStatus: Array<{ status: string; count: number }>;
+    note: string;
+  };
 }
 
 function dateKeyUtc(d: Date): string {
@@ -62,22 +74,47 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
   const start = todayUtc(forDate);
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
 
-  const [completed, failed, waiting, blocked, heartbeats, errorLogs, aiUsage, newLeadsToday, totalOpenLeads, researchRunsToday, newWebResultsToday] =
-    await Promise.all([
-      prisma.task.findMany({ where: { status: "DONE", updatedAt: { gte: start, lt: end } } }),
-      prisma.task.findMany({ where: { status: "FAILED", updatedAt: { gte: start, lt: end } } }),
-      prisma.task.findMany({ where: { status: "WAITING", updatedAt: { gte: start, lt: end } } }),
-      prisma.task.findMany({ where: { status: "BLOCKED", updatedAt: { gte: start, lt: end } } }),
-      listHeartbeats(),
-      prisma.systemLog.count({ where: { category: { in: ["ERROR", "CRITICAL"] }, createdAt: { gte: start, lt: end } } }),
-      summarizeUsageSince(startOfDayUtc(forDate)),
-      prisma.lead.count({ where: { createdAt: { gte: start, lt: end } } }).catch(() => "no data" as const),
-      prisma.lead.count({ where: { status: { in: ["NEW", "CONTACTED", "QUALIFIED"] } } }).catch(() => "no data" as const),
-      prisma.researchRun.count({ where: { startedAt: { gte: start, lt: end } } }),
-      prisma.event.count({ where: { type: "WEB.new_research_result", createdAt: { gte: start, lt: end } } }),
-    ]);
+  const [
+    completed,
+    failed,
+    waiting,
+    blocked,
+    heartbeats,
+    errorLogs,
+    aiUsage,
+    newLeadsToday,
+    totalOpenLeads,
+    researchRunsToday,
+    newWebResultsToday,
+    emailsSentToday,
+    emailsReceivedToday,
+    newLeadsFromResearchToday,
+    pendingApprovals,
+    approvalsDecidedToday,
+    leadsByStatusRaw,
+  ] = await Promise.all([
+    prisma.task.findMany({ where: { status: "DONE", updatedAt: { gte: start, lt: end } } }),
+    prisma.task.findMany({ where: { status: "FAILED", updatedAt: { gte: start, lt: end } } }),
+    prisma.task.findMany({ where: { status: "WAITING", updatedAt: { gte: start, lt: end } } }),
+    prisma.task.findMany({ where: { status: "BLOCKED", updatedAt: { gte: start, lt: end } } }),
+    listHeartbeats(),
+    prisma.systemLog.count({ where: { category: { in: ["ERROR", "CRITICAL"] }, createdAt: { gte: start, lt: end } } }),
+    summarizeUsageSince(startOfDayUtc(forDate)),
+    prisma.lead.count({ where: { createdAt: { gte: start, lt: end } } }).catch(() => "no data" as const),
+    prisma.lead.count({ where: { status: { in: ["NEW", "CONTACTED", "QUALIFIED"] } } }).catch(() => "no data" as const),
+    prisma.researchRun.count({ where: { startedAt: { gte: start, lt: end } } }),
+    prisma.event.count({ where: { type: "WEB.new_research_result", createdAt: { gte: start, lt: end } } }),
+    prisma.email.count({ where: { direction: "outbound", status: "SENT", createdAt: { gte: start, lt: end } } }),
+    prisma.email.count({ where: { direction: "inbound", createdAt: { gte: start, lt: end } } }),
+    prisma.lead.count({ where: { researchRunId: { not: null }, createdAt: { gte: start, lt: end } } }),
+    prisma.approvalRequest.count({ where: { status: "PENDING" } }),
+    prisma.approvalRequest.count({ where: { status: { in: ["APPROVED", "REJECTED"] }, updatedAt: { gte: start, lt: end } } }),
+    prisma.lead.groupBy({ by: ["status"], _count: { status: true } }),
+  ]);
 
   const webResearchConfigured = Boolean(process.env.BRAVE_SEARCH_API_KEY && process.env.BRAVE_SEARCH_API_KEY.trim() !== "");
+  const emailProviderConfigured = Boolean(process.env.GMAIL_ACCESS_TOKEN && process.env.GMAIL_USER_EMAIL);
+  const leadsByStatus = leadsByStatusRaw.map((r) => ({ status: r.status, count: r._count.status }));
 
   const now = Date.now();
 
@@ -110,6 +147,18 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
       note: webResearchConfigured
         ? `Web research capability is configured; ${researchRunsToday} research run(s) and ${newWebResultsToday} new tracked-topic result(s) today.`
         : "Web research capability is not configured (no search provider credential); this brief covers internal system status only.",
+    },
+    emailCrm: {
+      emailProviderConfigured,
+      emailsSentToday,
+      emailsReceivedToday,
+      newLeadsFromResearchToday,
+      pendingApprovals,
+      approvalsDecidedToday,
+      leadsByStatus,
+      note: emailProviderConfigured
+        ? `Email capability is configured; ${emailsSentToday} sent / ${emailsReceivedToday} received today, ${pendingApprovals} approval(s) pending.`
+        : `Email sending/receiving is not configured (no GMAIL_ACCESS_TOKEN/GMAIL_USER_EMAIL); CRM pipeline counts below are still real. ${pendingApprovals} approval(s) pending.`,
     },
   };
 }

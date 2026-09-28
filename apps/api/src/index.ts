@@ -13,6 +13,7 @@ import { seedExampleConditionRules } from "../../../core/conditions/rules";
 import { worker } from "../../../core/worker";
 import { seedResearchTopics } from "../../../core/research/topics";
 import { webEventSource } from "../../../core/events/webEventSource";
+import { seedDefaultProductCategories } from "../../../core/crm/businessConfig";
 
 async function main() {
   applyPendingMigrations();
@@ -50,6 +51,14 @@ async function main() {
     await webEventSource.start();
   } catch (err) {
     log("WARNING", "web_event_source.init_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    await seedDefaultProductCategories();
+  } catch (err) {
+    log("WARNING", "boot.product_category_seed_failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
