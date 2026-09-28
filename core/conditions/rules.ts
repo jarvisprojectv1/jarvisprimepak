@@ -124,6 +124,25 @@ export async function seedExampleConditionRules(): Promise<void> {
     },
   });
 
+  // Phase 6 (Web Research, item 7): a genuinely new web research result for
+  // a tracked topic creates a research task tagged agentName:"research", so
+  // the worker delegates it directly to the (now web-capable) ResearchAgent.
+  await prisma.conditionRule.upsert({
+    where: { name: "web-new-research-result" },
+    update: {},
+    create: {
+      name: "web-new-research-result",
+      eventType: "WEB.new_research_result",
+      conditionJson: JSON.stringify({ all: [{ field: "type", op: "contains", value: "WEB." }] }),
+      actionType: "create_task",
+      actionParams: JSON.stringify({
+        title: "Research new web result",
+        priority: "LOW",
+        agentName: "research",
+      }),
+    },
+  });
+
   await prisma.conditionRule.upsert({
     where: { name: "morning-briefing" },
     update: {},

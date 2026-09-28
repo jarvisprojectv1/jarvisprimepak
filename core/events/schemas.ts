@@ -36,8 +36,10 @@ export const ALL_EVENT_CATEGORIES: EventCategory[] = [
 ];
 
 // Categories with an implemented, validated payload shape in this phase.
-// EMAIL/WEB/MARKET/VOICE/CALENDAR are reserved names with no schema (and
-// therefore no publishable event) yet.
+// EMAIL/MARKET/VOICE/CALENDAR remain reserved names with no schema (and
+// therefore no publishable event) yet. WEB is now implemented for real
+// (Phase 6, item 7 - core/events/webEventSource.ts), a bounded, configured
+// polling source - never unrestricted crawling.
 const IMPLEMENTED_CATEGORIES = new Set<EventCategory>([
   "SYSTEM",
   "SCHEDULE",
@@ -46,6 +48,7 @@ const IMPLEMENTED_CATEGORIES = new Set<EventCategory>([
   "AGENT",
   "CRM",
   "NOTIFICATION",
+  "WEB",
 ]);
 
 /**
@@ -99,6 +102,11 @@ const SHAPE_CHECKS: Record<string, (payload: unknown) => ShapeCheckResult> = {
   NOTIFICATION: (p) => {
     if (!isPlainObject(p)) return { valid: false, reason: "NOTIFICATION payload must be an object." };
     if (typeof p.title !== "string") return { valid: false, reason: "NOTIFICATION payload requires a string 'title'." };
+    return { valid: true };
+  },
+  WEB: (p) => {
+    if (!isPlainObject(p)) return { valid: false, reason: "WEB payload must be an object." };
+    if (typeof p.topicName !== "string") return { valid: false, reason: "WEB payload requires a string 'topicName'." };
     return { valid: true };
   },
 };

@@ -82,7 +82,7 @@ export async function processClaimedTask(task: PlannedTask, retryLimit: number):
       if (!agent) return markTerminal(task, "FAILED", `Agent "${task.agentName}" is not registered.`, retryLimit);
       const result = await agent.run({}, WORKER_IDENTITY);
       if (result.status === "SUCCESS") return markTerminal(task, "DONE", result.summary, retryLimit);
-      if (result.status === "NOT_IMPLEMENTED") return markTerminal(task, "WAITING", result.summary, retryLimit);
+      if (result.status === "NOT_IMPLEMENTED" || result.status === "WAITING") return markTerminal(task, "WAITING", result.summary, retryLimit);
       return markTerminal(task, "FAILED", result.summary, retryLimit);
     }
 

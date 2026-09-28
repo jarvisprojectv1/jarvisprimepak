@@ -64,15 +64,13 @@ export class NotImplementedEmailEventSource implements EmailEventSource {
   isRunning = this.base.isRunning;
 }
 
-/** Web monitoring (e.g. a competitor page changed) -> WEB.* events (reserved). */
+/**
+ * Web monitoring (Phase 6, item 7): a bounded, CONFIGURED polling source over
+ * `ResearchTopic` rows -> WEB.* events. This is now REAL (not a stub) - see
+ * core/events/webEventSource.ts for the implementation. The interface stays
+ * here so every other EventSource keeps its documented shape in one place.
+ */
 export interface WebEventSource extends EventSource {}
-export class NotImplementedWebEventSource implements WebEventSource {
-  private readonly base = notImplementedSource("web-event-source");
-  name = this.base.name;
-  start = this.base.start;
-  stop = this.base.stop;
-  isRunning = this.base.isRunning;
-}
 
 /** Market/pricing data feed -> MARKET.* events (reserved). */
 export interface MarketEventSource extends EventSource {}
