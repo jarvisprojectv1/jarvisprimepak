@@ -13,6 +13,8 @@ import { authRouter } from "./routes/auth";
 import { notificationsRouter } from "./routes/notifications";
 import { brainRouter } from "./routes/brain";
 import { workerRouter } from "./routes/worker";
+import { researchRouter } from "./routes/research";
+import { skillsRouter } from "./routes/skills";
 import { log } from "../../../security/logger";
 
 export function createApp(): Express {
@@ -34,6 +36,8 @@ export function createApp(): Express {
   app.use("/notifications", notificationsRouter);
   app.use("/brain", brainRouter);
   app.use("/worker", workerRouter);
+  app.use("/research", researchRouter);
+  app.use("/skills", skillsRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: `No route for ${req.method} ${req.path}` });

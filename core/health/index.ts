@@ -185,6 +185,19 @@ async function checkWorker(): Promise<ComponentHealth> {
   }
 }
 
+// Phase 6: 12th check - is a real web search provider configured? Never
+// makes a live network call from a health check (that would make /health
+// itself flaky/slow and dependent on outbound network) - just reports
+// whether the credential is present, exactly like checking scheduler/tool
+// registration state above.
+async function checkWebProvider(): Promise<ComponentHealth> {
+  const configured = Boolean(process.env.BRAVE_SEARCH_API_KEY && process.env.BRAVE_SEARCH_API_KEY.trim() !== "");
+  if (!configured) {
+    return { status: "DEGRADED", reason: "No web search provider configured (BRAVE_SEARCH_API_KEY unset) - research features return CONFIGURATION_REQUIRED." };
+  }
+  return { status: "HEALTHY", reason: "A web search provider credential is configured." };
+}
+
 function aggregate(components: Record<string, ComponentHealth>): HealthStatus {
   const statuses = Object.values(components).map((c) => c.status);
   if (statuses.includes("FAILED")) return "FAILED";
@@ -194,7 +207,7 @@ function aggregate(components: Record<string, ComponentHealth>): HealthStatus {
 }
 
 export async function getSystemHealth(): Promise<SystemHealthReport> {
-  const [api, database, schedulerHealth, eventBus, taskQueue, agents, tools, memory, disk, resources, workerHealth] =
+  const [api, database, schedulerHealth, eventBus, taskQueue, agents, tools, memory, disk, resources, workerHealth, webProvider] =
     await Promise.all([
       checkApi(),
       checkDatabase(),
@@ -207,6 +220,7 @@ export async function getSystemHealth(): Promise<SystemHealthReport> {
       checkDisk(),
       checkResources(),
       checkWorker(),
+      checkWebProvider(),
     ]);
 
   const components: Record<string, ComponentHealth> = {
@@ -221,6 +235,7 @@ export async function getSystemHealth(): Promise<SystemHealthReport> {
     disk,
     resources,
     worker: workerHealth,
+    webProvider,
   };
 
   return {

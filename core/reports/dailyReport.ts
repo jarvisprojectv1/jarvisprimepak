@@ -39,6 +39,14 @@ export interface DailyReportContent {
     newLeadsToday: number | "no data";
     totalOpenLeads: number | "no data";
   };
+  // Phase 6 (Web Research): honestly reports whether web research ran
+  // overnight - never fabricates "overnight monitoring" that didn't happen.
+  research: {
+    webResearchConfigured: boolean;
+    researchRunsToday: number;
+    newWebResultsToday: number;
+    note: string;
+  };
 }
 
 function dateKeyUtc(d: Date): string {
@@ -54,7 +62,7 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
   const start = todayUtc(forDate);
   const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
 
-  const [completed, failed, waiting, blocked, heartbeats, errorLogs, aiUsage, newLeadsToday, totalOpenLeads] =
+  const [completed, failed, waiting, blocked, heartbeats, errorLogs, aiUsage, newLeadsToday, totalOpenLeads, researchRunsToday, newWebResultsToday] =
     await Promise.all([
       prisma.task.findMany({ where: { status: "DONE", updatedAt: { gte: start, lt: end } } }),
       prisma.task.findMany({ where: { status: "FAILED", updatedAt: { gte: start, lt: end } } }),
@@ -65,7 +73,11 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
       summarizeUsageSince(startOfDayUtc(forDate)),
       prisma.lead.count({ where: { createdAt: { gte: start, lt: end } } }).catch(() => "no data" as const),
       prisma.lead.count({ where: { status: { in: ["NEW", "CONTACTED", "QUALIFIED"] } } }).catch(() => "no data" as const),
+      prisma.researchRun.count({ where: { startedAt: { gte: start, lt: end } } }),
+      prisma.event.count({ where: { type: "WEB.new_research_result", createdAt: { gte: start, lt: end } } }),
     ]);
+
+  const webResearchConfigured = Boolean(process.env.BRAVE_SEARCH_API_KEY && process.env.BRAVE_SEARCH_API_KEY.trim() !== "");
 
   const now = Date.now();
 
@@ -90,6 +102,14 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
     business: {
       newLeadsToday: typeof newLeadsToday === "number" ? newLeadsToday : "no data",
       totalOpenLeads: typeof totalOpenLeads === "number" ? totalOpenLeads : "no data",
+    },
+    research: {
+      webResearchConfigured,
+      researchRunsToday,
+      newWebResultsToday,
+      note: webResearchConfigured
+        ? `Web research capability is configured; ${researchRunsToday} research run(s) and ${newWebResultsToday} new tracked-topic result(s) today.`
+        : "Web research capability is not configured (no search provider credential); this brief covers internal system status only.",
     },
   };
 }

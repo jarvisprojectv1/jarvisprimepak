@@ -11,6 +11,8 @@ import { recoverUnfinishedTasks } from "../../../core/tasks";
 import { registerDefaultSubscribers } from "../../../core/events";
 import { seedExampleConditionRules } from "../../../core/conditions/rules";
 import { worker } from "../../../core/worker";
+import { seedResearchTopics } from "../../../core/research/topics";
+import { webEventSource } from "../../../core/events/webEventSource";
 
 async function main() {
   applyPendingMigrations();
@@ -39,6 +41,15 @@ async function main() {
     await registerExampleJobs();
   } catch (err) {
     log("WARNING", "scheduler.init_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    await seedResearchTopics();
+    await webEventSource.start();
+  } catch (err) {
+    log("WARNING", "web_event_source.init_failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   }

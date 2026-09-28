@@ -38,7 +38,13 @@ export type AuthzAction =
   | "brain.read"
   | "worker.read"
   | "worker.write"
-  | "report.read";
+  | "report.read"
+  // Phase 6 (Web Research & Autonomous Intelligence) - additive only.
+  | "research.read"
+  | "research.write"
+  | "skills.read"
+  | "skills.write"
+  | "skills.activate";
 
 export interface AuthzResult {
   allowed: boolean;
@@ -65,9 +71,13 @@ const ROLE_ACTIONS: Record<IdentityKind, Set<AuthzAction> | "ALL"> = {
     "worker.read",
     "worker.write",
     "report.read",
+    "research.read",
+    "research.write",
+    "skills.read",
+    "skills.write",
   ]),
   AGENT: new Set<AuthzAction>(["tool.execute", "memory.read", "memory.write", "task.write", "task.read"]),
-  SERVICE: new Set<AuthzAction>(["tool.execute", "memory.read", "task.read"]),
+  SERVICE: new Set<AuthzAction>(["tool.execute", "memory.read", "task.read", "research.read", "research.write"]),
 };
 
 const ALL_ACTIONS: AuthzAction[] = [
@@ -92,6 +102,11 @@ const ALL_ACTIONS: AuthzAction[] = [
   "worker.read",
   "worker.write",
   "report.read",
+  "research.read",
+  "research.write",
+  "skills.read",
+  "skills.write",
+  "skills.activate",
 ];
 
 /**
