@@ -1,7 +1,7 @@
 // core/approvals/approvals.test.ts - items Q (approval queue) and R (audit trail).
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma } from "../../database/client";
-import { createApprovalRequest, approveRequest, rejectRequest, listApprovalRequests } from "./index";
+import { createApprovalRequest, approveRequest, rejectRequest, revokeRequest, listApprovalRequests } from "./index";
 
 beforeEach(async () => {
   await prisma.auditLog.deleteMany();
@@ -81,6 +81,50 @@ describe("Q: approval queue", () => {
     expect(second.id).toBe(first.id);
     const count = await prisma.approvalRequest.count();
     expect(count).toBe(1);
+  });
+});
+
+describe("Phase 7.1 item 6: revoke lifecycle", () => {
+  it("revokeRequest() transitions APPROVED -> REVOKED and is audited", async () => {
+    const req = await createApprovalRequest({
+      action: "email.send",
+      reason: "test",
+      target: "x@example.com",
+      proposedContent: { subject: "s", body: "b" },
+      riskClassification: "HIGH",
+      createdBy: "system:test",
+    });
+    await approveRequest(req.id, "owner:jane@example.com");
+    const revoked = await revokeRequest(req.id, "owner:jane@example.com", "circumstances changed");
+    expect(revoked.status).toBe("REVOKED");
+    const entries = await prisma.auditLog.findMany({ where: { target: req.id, action: "approval.revoked" } });
+    expect(entries.length).toBe(1);
+  });
+
+  it("cannot revoke a request that is not APPROVED (e.g. still PENDING)", async () => {
+    const req = await createApprovalRequest({
+      action: "email.send",
+      reason: "test",
+      target: "x@example.com",
+      proposedContent: { subject: "s", body: "b" },
+      riskClassification: "HIGH",
+      createdBy: "system:test",
+    });
+    await expect(revokeRequest(req.id, "owner:jane@example.com")).rejects.toThrow();
+  });
+
+  it("a REVOKED approval is treated as not-approved (status check fails closed)", async () => {
+    const req = await createApprovalRequest({
+      action: "email.send",
+      reason: "test",
+      target: "x@example.com",
+      proposedContent: { subject: "s", body: "b" },
+      riskClassification: "HIGH",
+      createdBy: "system:test",
+    });
+    await approveRequest(req.id, "owner:jane@example.com");
+    const revoked = await revokeRequest(req.id, "owner:jane@example.com");
+    expect(revoked.status).not.toBe("APPROVED");
   });
 });
 

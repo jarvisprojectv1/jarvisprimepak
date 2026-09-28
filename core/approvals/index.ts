@@ -14,7 +14,13 @@ import { notificationService } from "../notifications";
 import { writeAuditLog } from "../../security/audit";
 import { log } from "../../security/logger";
 
-export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
+// Phase 7.1 hardening (item 6): REVOKED added additively - an OWNER can pull
+// back an already-APPROVED request before it is used (e.g. circumstances
+// changed). tools/email/emailTool.ts's `approval.status !== "APPROVED"`
+// check already treats anything but the literal string "APPROVED" as not
+// approved, so REVOKED needs no change there - it just needs a real decision
+// path to reach it, which revokeRequest() below provides.
+export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "REVOKED";
 
 export interface CreateApprovalInput {
   action: string;
@@ -146,6 +152,32 @@ export async function approveRequest(id: string, decidedBy: string, note?: strin
 
 export async function rejectRequest(id: string, decidedBy: string, note?: string): Promise<ApprovalRecord> {
   return decide(id, "REJECTED", decidedBy, note);
+}
+
+/**
+ * OWNER-only: revokes an already-APPROVED request (item 6's
+ * "APPROVED -> REVOKED before retry" case). Unlike approve/reject (which
+ * only ever act on PENDING), this is the one decision path that acts on an
+ * APPROVED row - proposedContent is still never touched, and the revocation
+ * is audited exactly like every other decision.
+ */
+export async function revokeRequest(id: string, decidedBy: string, note?: string): Promise<ApprovalRecord> {
+  const existing = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
+  if (existing.status !== "APPROVED") {
+    throw new Error(`Approval request ${id} is ${existing.status}, not APPROVED; nothing to revoke.`);
+  }
+  const row = await prisma.approvalRequest.update({
+    where: { id },
+    data: { status: "REVOKED", decidedBy, decidedAt: new Date(), decisionNote: note ?? null },
+  });
+  await writeAuditLog({
+    actor: decidedBy,
+    action: "approval.revoked",
+    target: id,
+    meta: { approvalAction: existing.action, target: existing.target, riskClassification: existing.riskClassification, success: true },
+  });
+  log("BUSINESS", "approvals.revoked", { id, decidedBy });
+  return toRecord(row);
 }
 
 /** Marks every PENDING request past its expiresAt as EXPIRED. Called by the scheduler/daily report, never blocks a decision path. */

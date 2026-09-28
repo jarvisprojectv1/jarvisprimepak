@@ -28,6 +28,60 @@ export async function checkIdempotency(idempotencyKey: string): Promise<Idempote
   return { alreadySent: existing.status === "SENT", existing: { id: existing.id, status: existing.status, providerMessageId: existing.providerMessageId } };
 }
 
+export interface ReservationResult {
+  reserved: boolean;
+  existing?: { id: string; status: string; providerMessageId: string | null };
+}
+
+/**
+ * Phase 7.1 hardening (item 7): atomically reserves an idempotency key
+ * BEFORE the real provider is ever called, closing a true-concurrency race
+ * that checkIdempotency()'s plain read cannot: two concurrent send attempts
+ * with the identical idempotencyKey (e.g. two worker slots racing the same
+ * task, or a genuinely simultaneous retry) both pass checkIdempotency()'s
+ * read (neither has sent yet), but only ONE of them can win this INSERT -
+ * OutboundSendLog.idempotencyKey's DB unique constraint makes the second
+ * caller's create() fail, not "unlikely to conflict." The loser never calls
+ * the provider; it reports the winner's outcome instead (recordSendAttempt()
+ * below then updates the winning row to SENT once the real send completes).
+ */
+export async function reserveIdempotencyKey(input: {
+  idempotencyKey: string;
+  taskId?: string | null;
+  contactId?: string | null;
+}): Promise<ReservationResult> {
+  try {
+    await prisma.outboundSendLog.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        taskId: input.taskId ?? null,
+        contactId: input.contactId ?? null,
+        status: "SENDING",
+      },
+    });
+    return { reserved: true };
+  } catch {
+    // Unique constraint violation: a row for this key already exists. If it
+    // is in a RETRYABLE terminal state (FAILED/BLOCKED - a prior attempt
+    // that never actually reached "sent"), claim it for this retry via a
+    // conditional update (still DB-atomic: only one concurrent caller's
+    // updateMany can match+flip a given row). If it is SENDING (another
+    // attempt is in flight right now) or SENT (already delivered), this
+    // caller does not win the reservation.
+    const claim = await prisma.outboundSendLog.updateMany({
+      where: { idempotencyKey: input.idempotencyKey, status: { in: ["FAILED", "BLOCKED"] } },
+      data: { status: "SENDING" },
+    });
+    if (claim.count === 1) return { reserved: true };
+
+    const existing = await prisma.outboundSendLog.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+    return {
+      reserved: false,
+      existing: existing ? { id: existing.id, status: existing.status, providerMessageId: existing.providerMessageId } : undefined,
+    };
+  }
+}
+
 /** Records the outcome of a send attempt. A duplicate key with status SENT is left as-is (never overwritten to a later, possibly-forged outcome). */
 export async function recordSendAttempt(input: {
   idempotencyKey: string;

@@ -712,3 +712,44 @@ WHAT SHOULD BE BUILT NEXT (as of Phase 7)
 - Everything still open from Phase 6/6.1 (live `BraveSearchProvider`
   credentials, a real skill-code sandbox, a semantic cross-source
   comparator) remains unchanged and open.
+
+PHASE 7.1 UPDATE (EMAIL/CRM HARDENING) — see docs/PHASE7_1_HARDENING.md for
+the full writeup. A hardening/completion pass over Phase 7 only.
+- Scheduler: `morning-briefing`/`daily-report` moved from hardcoded `"UTC"`
+  to `"Asia/Karachi"` (05:00/21:00 local respectively) - `node-cron`'s
+  timezone plumbing was already correct (verified by reading its source), so
+  this was a 2-line change per job. No other job's timezone touched.
+- Follow-ups are now real: new `FollowUp` table (migration
+  `20260928150017_phase7_1_followup_hardening`), `scheduleFollowUp()`/
+  `scheduleDueFollowUps()` (`core/business/followUp.ts`), a new hourly
+  `follow-up-dispatch` scheduler job, and a 7-line additive change to
+  `core/worker/index.ts` (passes `{taskId}` instead of `{}` to a
+  toolName-tagged task's tool call) so a follow-up `Task` (tagged
+  `toolName:"email"`) executes through the SAME `tools/email/emailTool.ts`
+  send path every other outbound email uses - re-checking every
+  cancellation condition (reply/suppression/lead WON-LOST-NURTURE/pending
+  approval/pause/emergency-stop) against the latest CRM state immediately
+  before send, never a second sender.
+- Approval queue hardening (`core/approvals/index.ts`,
+  `tools/email/emailTool.ts`): a new `REVOKED` status +
+  OWNER-only `revokeRequest()`/`POST /approvals/:id/revoke`; an APPROVED
+  request is now also verified against the send's actual target/action and
+  its `expiresAt` at send time (not just at decision time) before being
+  trusted - two real gaps found by re-reading the code, not assumed present.
+- True-concurrency send idempotency: `reserveIdempotencyKey()`
+  (`core/business/idempotency.ts`) atomically reserves the idempotency key
+  (DB unique constraint, not an in-memory lock) immediately before the one
+  real `provider.sendMessage()` call, closing a race Phase 7's plain-read
+  `checkIdempotency()` could not - proven with a `Promise.all` of two
+  identical concurrent sends resulting in exactly one real provider call.
+- Disclosed, not fixed this phase (documented, not silently skipped):
+  domain-level suppression, phone-number normalization in
+  `core/crm/dedup.ts`, AI-assisted email drafting (explicitly out of scope).
+- 24 new tests (444/444 total, up from 420/420). Root and `apps/api`
+  typechecks both clean. `git diff --stat` against commit `44ffeee` for
+  `core/enforcement/`, `tools/registry.ts`, `agents/registry.ts`,
+  `core/state/`, `core/limits/`, `core/ai/costControl.ts`,
+  `core/worker/claim.ts`, `core/decision_engine/`, and `core/policy/` all
+  show ZERO diff. The only enforcement-adjacent file touched is
+  `core/worker/index.ts` (not in that list), a 7-line additive change
+  documented above.
