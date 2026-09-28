@@ -34,7 +34,11 @@ export async function recoverUnfinishedTasks(): Promise<RecoveryReport> {
 
     await prisma.task.update({
       where: { id: task.id },
-      data: { status: nextStatus, retryCount: nextRetryCount },
+      // Phase 5: also clear any stale worker claim (claimedBy/claimedAt/
+      // claimExpiresAt) - a task IN_PROGRESS at boot may have been claimed by
+      // a now-dead worker slot (core/worker/claim.ts), not just left running
+      // by the old orchestrator/Brain path this function originally covered.
+      data: { status: nextStatus, retryCount: nextRetryCount, claimedBy: null, claimedAt: null, claimExpiresAt: null },
     });
 
     if (canRetry) {

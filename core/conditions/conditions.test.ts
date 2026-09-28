@@ -91,4 +91,18 @@ describe("core/conditions - rule wiring (seeded, data-driven rules)", () => {
     const after = await prisma.task.count();
     expect(after).toBeGreaterThan(before);
   });
+
+  it("Phase 5 (#8): a SCHEDULE.fired event for the daily-report job creates a task tagged toolName:'reports'", async () => {
+    await seedExampleConditionRules();
+
+    await publish({
+      type: "SCHEDULE.fired",
+      payload: { jobName: "daily-report" },
+      source: "test",
+    });
+
+    const latest = await prisma.task.findFirst({ orderBy: { createdAt: "desc" } });
+    expect(latest?.title.toLowerCase()).toContain("daily executive report");
+    expect(latest?.toolName).toBe("reports");
+  });
 });

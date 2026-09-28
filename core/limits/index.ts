@@ -171,6 +171,36 @@ export function checkRetryLimit(retryCount: number, limit: number): boolean {
   return retryCount < limit;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 (Autonomous Worker): non-mutating "peek" checks. These read the
+// current bucket state WITHOUT bumping the counter, so the worker's
+// eligibility pre-filter (core/worker/eligibility.ts) can ask "would this be
+// rate-limited right now?" without itself consuming a slot a real call would
+// need. The real, consuming checkToolRate/checkAgentRate inside
+// core/enforcement remain the ONLY authoritative gate - this is a cheap
+// pre-filter to avoid wasted Brain/tool invocations, never a replacement for
+// the gate.
+// ---------------------------------------------------------------------------
+function peek(buckets: Map<string, Bucket>, key: string, limit: number, now = Date.now()): boolean {
+  const bucket = buckets.get(key);
+  if (!bucket || now - bucket.windowStart >= WINDOW_MS) return true;
+  return bucket.count < limit;
+}
+
+export async function peekToolRate(toolName: string): Promise<boolean> {
+  const limits = await getLimitsConfig();
+  return peek(toolBuckets, toolName, limits.toolRateLimitPerMinute);
+}
+
+export async function peekAgentRate(agentName: string): Promise<boolean> {
+  const limits = await getLimitsConfig();
+  return peek(agentBuckets, agentName, limits.agentRateLimitPerMinute);
+}
+
+export function peekConcurrentAgentSlot(limit: number): boolean {
+  return runningAgents.size < limit;
+}
+
 /** Test-only: resets all in-process counters. */
 export function __resetLimitsForTests(): void {
   toolBuckets.clear();

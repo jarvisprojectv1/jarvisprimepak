@@ -84,3 +84,16 @@ export function identityFromUser(user: {
 export function identityToActorString(identity: Identity): string {
   return identity.label;
 }
+
+/**
+ * Phase 5 (Autonomous Worker): the fixed, non-human identity the standing
+ * worker loop runs its actions as. A dedicated SERVICE identity (rather than
+ * reusing SYSTEM_IDENTITY) so the audit trail can tell "the scheduler/boot
+ * code did this" apart from "the autonomous worker loop did this" - both are
+ * internal, non-HTTP callers with the same non-bypass guarantee
+ * (serviceIdentity()/SYSTEM_IDENTITY are never mintable via any HTTP
+ * endpoint). This does NOT grant the worker any capability the enforcement
+ * gate wouldn't otherwise allow - core/enforcement and core/authz apply to it
+ * exactly as they would to any other caller.
+ */
+export const WORKER_IDENTITY: Identity = serviceIdentity("worker");

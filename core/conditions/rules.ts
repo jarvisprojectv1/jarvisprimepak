@@ -12,7 +12,10 @@ export type ActionType = "create_task";
 export interface CreateTaskActionParams {
   title: string;
   description?: string;
-  priority?: "LOW" | "NORMAL" | "HIGH" | "URGENT";
+  priority?: "CRITICAL" | "HIGH" | "NORMAL" | "LOW";
+  /** Phase 5: lets a condition rule create a task pre-tagged for direct tool/agent execution by the worker. */
+  toolName?: string;
+  agentName?: string;
 }
 
 /** Runs every enabled ConditionRule whose eventType matches `event.type`, executing the action for each match. */
@@ -68,6 +71,8 @@ async function runAction(actionType: ActionType, actionParamsJson: string, event
     title: params.title,
     description: params.description ?? `Auto-created by condition rule from event ${event.type} (${event.id}).`,
     priority: params.priority,
+    toolName: params.toolName,
+    agentName: params.agentName,
   });
 }
 
@@ -92,6 +97,29 @@ export async function seedExampleConditionRules(): Promise<void> {
       actionParams: JSON.stringify({
         title: "Research new hot lead",
         priority: "HIGH",
+      }),
+    },
+  });
+
+  // Phase 5 (#8/#11): the evening half of the Autonomous Daily Cycle. The
+  // created task is tagged toolName:"reports" so the worker (core/worker)
+  // executes it DIRECTLY through the guarded tool registry (tools/reports.ts
+  // -> core/reports/dailyReport.ts), without needing a Brain planning round
+  // trip for a deterministic, always-the-same action.
+  await prisma.conditionRule.upsert({
+    where: { name: "daily-report" },
+    update: {},
+    create: {
+      name: "daily-report",
+      eventType: "SCHEDULE.fired",
+      conditionJson: JSON.stringify({
+        all: [{ field: "payload.jobName", op: "eq", value: "daily-report" }],
+      }),
+      actionType: "create_task",
+      actionParams: JSON.stringify({
+        title: "Generate daily executive report",
+        priority: "NORMAL",
+        toolName: "reports",
       }),
     },
   });
