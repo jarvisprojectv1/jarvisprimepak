@@ -34,7 +34,8 @@ export type AuthzAction =
   | "notification.read"
   | "notification.write"
   | "system.health.read"
-  | "chat.use";
+  | "chat.use"
+  | "brain.read";
 
 export interface AuthzResult {
   allowed: boolean;
@@ -57,6 +58,7 @@ const ROLE_ACTIONS: Record<IdentityKind, Set<AuthzAction> | "ALL"> = {
     "notification.write",
     "notification.read",
     "system.health.read",
+    "brain.read",
   ]),
   AGENT: new Set<AuthzAction>(["tool.execute", "memory.read", "memory.write", "task.write", "task.read"]),
   SERVICE: new Set<AuthzAction>(["tool.execute", "memory.read", "task.read"]),
@@ -80,6 +82,7 @@ const ALL_ACTIONS: AuthzAction[] = [
   "notification.write",
   "system.health.read",
   "chat.use",
+  "brain.read",
 ];
 
 /**

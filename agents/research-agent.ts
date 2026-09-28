@@ -50,11 +50,14 @@ export class ResearchAgent implements AgentInterface {
             summary:
               `No internal knowledge found for "${topic}". Open-web research requires a ` +
               `search provider that is not configured in Phase 1 (see tools/web.ts).`,
+            nextAction: "Configure a web search provider (tools/web.ts) or supply the answer manually.",
           }
         : {
             status: "SUCCESS",
             summary: `Found ${matches.length} internal knowledge entr${matches.length === 1 ? "y" : "ies"} for "${topic}".`,
             data: { matches },
+            result: { matches },
+            evidence: { matchCount: matches.length, matchIds: matches.map((m) => m.id) },
           };
 
       this.status = result.status;

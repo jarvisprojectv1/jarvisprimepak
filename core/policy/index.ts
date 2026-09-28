@@ -102,6 +102,8 @@ function isHardBlocked(...names: (string | undefined)[]): string | undefined {
 const AUTONOMOUS_NAMES = new Set([
   "research", // research agent / research actions
   "crm", // CRM read/update agent
+  "task", // task agent (wraps core/planner - internal task bookkeeping)
+  "system", // system agent (read-only health/state queries)
   "files", // internal data organization (sandboxed)
   "web", // read-only research/search
   "reports.generate",

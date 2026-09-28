@@ -40,11 +40,14 @@ export class CrmAgent implements AgentInterface {
               `Found ${leads.length} stale lead(s) needing attention, but lead ` +
               `enrichment requires a third-party data provider that is not configured in Phase 1.`,
             data: { staleLeadIds: leads.map((l) => l.id) },
+            nextAction: "Configure a lead enrichment provider.",
           }
         : {
             status: "SUCCESS",
             summary: `Found ${leads.length} stale lead(s) (no activity in ${staleThresholdDays}+ days).`,
             data: { staleLeadIds: leads.map((l) => l.id) },
+            result: { staleLeadIds: leads.map((l) => l.id) },
+            evidence: { leadCount: leads.length, staleLeadIds: leads.map((l) => l.id) },
           };
 
       this.status = result.status;

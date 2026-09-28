@@ -3,6 +3,8 @@
 import type { AgentInterface } from "./types";
 import { ResearchAgent } from "./research-agent";
 import { CrmAgent } from "./crm-agent";
+import { TaskAgent } from "./task-agent";
+import { SystemAgent } from "./system-agent";
 import { guardAgentExecution } from "../core/enforcement";
 
 const agents = new Map<string, AgentInterface>();
@@ -31,6 +33,8 @@ export function registerBuiltinAgents(): void {
   if (registered) return;
   registerAgent(new ResearchAgent());
   registerAgent(new CrmAgent());
+  registerAgent(new TaskAgent());
+  registerAgent(new SystemAgent());
   registered = true;
 }
 
