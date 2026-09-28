@@ -64,4 +64,60 @@ describe("core/memory", () => {
       Memory.create({ namespace: "BUSINESS", key: "bad-importance", value: 1, importance: 99 })
     ).rejects.toThrow();
   });
+
+  it("supports the DECISION namespace", async () => {
+    const entry = await Memory.remember({
+      namespace: "DECISION",
+      key: `decision-${Date.now()}`,
+      content: "Chose vendor A over vendor B on price.",
+      source: "brain",
+    });
+    expect(entry.namespace).toBe("DECISION");
+    expect(entry.content).toContain("vendor A");
+  });
+
+  it("remember()/retrieve() store and return content, source, confidence, relatedEntity, metadata", async () => {
+    const key = `rich-${Date.now()}`;
+    const entry = await Memory.remember({
+      namespace: "CLIENT",
+      key,
+      content: "Client prefers matte lamination.",
+      source: "agent:research",
+      confidence: 0.8,
+      relatedEntity: "company-123",
+      metadata: { channel: "email" },
+    });
+    expect(entry.content).toBe("Client prefers matte lamination.");
+    expect(entry.source).toBe("agent:research");
+    expect(entry.confidence).toBe(0.8);
+    expect(entry.relatedEntity).toBe("company-123");
+    expect(entry.metadata).toEqual({ channel: "email" });
+
+    const retrieved = await Memory.retrieve("CLIENT", key);
+    expect(retrieved?.content).toBe("Client prefers matte lamination.");
+  });
+
+  it("supersede() archives the prior entry, same as update()", async () => {
+    const key = `supersede-${Date.now()}`;
+    const first = await Memory.remember({ namespace: "PROJECT", key, content: "v1" });
+    const second = await Memory.supersede({ namespace: "PROJECT", key, content: "v2" });
+    expect(second.supersedes).toBe(first.id);
+    const history = await Memory.history("PROJECT", key);
+    expect(history.find((h) => h.id === first.id)?.status).toBe("ARCHIVED");
+  });
+
+  it("forget() excludes a memory from search()/retrieve() without deleting its history", async () => {
+    const key = `forget-${Date.now()}`;
+    const created = await Memory.remember({ namespace: "TASK", key, content: "temp fact" });
+    await Memory.forget(created.id);
+
+    const retrieved = await Memory.retrieve("TASK", key);
+    expect(retrieved).toBeNull();
+
+    const found = await Memory.search({ namespace: "TASK", query: "temp fact" });
+    expect(found.some((r) => r.id === created.id)).toBe(false);
+
+    const history = await Memory.history("TASK", key);
+    expect(history.some((h) => h.id === created.id)).toBe(true);
+  });
 });
