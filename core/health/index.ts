@@ -16,6 +16,7 @@ import { publish, subscribe } from "../events";
 import { appConfig } from "../../config/env";
 import { getHeartbeat, isStale } from "../worker/heartbeat";
 import { getWorkerConfig } from "../worker/config";
+import { summarizeProviders } from "../../config/providers";
 
 export type HealthStatus = "HEALTHY" | "DEGRADED" | "FAILED" | "UNKNOWN";
 
@@ -204,6 +205,50 @@ function aggregate(components: Record<string, ComponentHealth>): HealthStatus {
   if (statuses.includes("DEGRADED")) return "DEGRADED";
   if (statuses.every((s) => s === "UNKNOWN")) return "UNKNOWN";
   return "HEALTHY";
+}
+
+// Phase 12 (Production Integration, item 6): liveness vs readiness are
+// DELIBERATELY different checks with different costs and different meaning,
+// following standard practice (a liveness probe answers "is the process
+// alive at all", cheap and near-instant; a readiness probe answers "can this
+// instance actually serve traffic right now", checking its real
+// dependencies) - neither replaces GET /system/health's full 12-component
+// report (that one stays authenticated and detailed, for an operator; these
+// two are meant for an unauthenticated process supervisor / load balancer
+// and intentionally reveal nothing sensitive).
+
+/** Liveness: the process can execute JS at all. No I/O, no dependency checks - if this throws or hangs, the process itself is the problem, not a dependency. */
+export function getLiveness(): { status: "HEALTHY"; checkedAt: string } {
+  return { status: "HEALTHY", checkedAt: new Date().toISOString() };
+}
+
+export interface ReadinessReport {
+  ready: boolean;
+  status: HealthStatus;
+  checkedAt: string;
+  database: ComponentHealth;
+  providers: ReturnType<typeof summarizeProviders>;
+}
+
+/**
+ * Readiness: can this instance serve real traffic right now? Checks the one
+ * dependency that makes EVERY request fail if it's down (the database), and
+ * reports provider configuration state for operator visibility - a missing
+ * OPTIONAL/CONFIGURATION_REQUIRED provider does NOT fail readiness (the
+ * system is designed to run with providers unconfigured, per config/env.ts's
+ * documented design principle), only a failed database does.
+ */
+export async function getReadiness(): Promise<ReadinessReport> {
+  const database = await checkDatabase();
+  const providers = summarizeProviders();
+  const ready = database.status !== "FAILED";
+  return {
+    ready,
+    status: database.status,
+    checkedAt: new Date().toISOString(),
+    database,
+    providers,
+  };
 }
 
 export async function getSystemHealth(): Promise<SystemHealthReport> {

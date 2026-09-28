@@ -9,6 +9,8 @@ export default defineConfig({
       "tools/**/*.test.ts",
       "scheduler/**/*.test.ts",
       "security/**/*.test.ts",
+      "config/**/*.test.ts",
+      "deploy/**/*.test.ts",
       "apps/api/tests/**/*.test.ts",
     ],
     testTimeout: 20000,
