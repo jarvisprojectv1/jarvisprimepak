@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { orchestrator } from "../../../../core/orchestrator";
+import { brain } from "../../../../core/brain";
 import { requireAuth, requireAuthz } from "../middleware/auth";
 
 export const chatRouter = Router();
@@ -7,6 +7,13 @@ export const chatRouter = Router();
 // /chat requires authentication, restricted to OWNER (chat.use is not
 // granted to SYSTEM/AGENT/SERVICE in core/authz) - the safer default for a
 // personal system like this, per docs/PHASE3_IDENTITY_EVENTS.md.
+//
+// Phase 4: /chat is now the Brain's entrypoint (core/brain), not the older
+// core/orchestrator directly - the Brain is a strict superset (context
+// retrieval, structured planning, tool/agent execution through the same
+// enforcement gate, memory persistence) and a plain conversational message
+// with no action needed produces the exact same reply shape as before (see
+// docs/PHASE4_BRAIN_MEMORY.md "Why /chat routes through the Brain").
 chatRouter.post("/", requireAuth, requireAuthz("chat.use"), async (req, res) => {
   const { message, toolCall, conversationId } = req.body ?? {};
 
@@ -15,12 +22,18 @@ chatRouter.post("/", requireAuth, requireAuthz("chat.use"), async (req, res) => 
     return;
   }
 
-  const response = await orchestrator.handleChat({ message, toolCall, conversationId });
+  const result = await brain.handle({ message, toolCall, conversationId }, req.identity);
 
-  if (response.configurationRequired) {
-    res.status(200).json({ ...response, ok: false });
-    return;
-  }
+  const ok = !result.configurationRequired && result.status !== "FAILED" && result.status !== "BLOCKED";
 
-  res.json({ ...response, ok: true });
+  res.status(200).json({
+    ok,
+    reply: result.reply,
+    configurationRequired: result.configurationRequired ?? false,
+    model: result.model,
+    status: result.status,
+    plan: result.plan,
+    steps: result.steps,
+    taskId: result.taskId,
+  });
 });

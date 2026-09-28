@@ -11,6 +11,7 @@ import { memoryRouter } from "./routes/memory";
 import { systemRouter } from "./routes/system";
 import { authRouter } from "./routes/auth";
 import { notificationsRouter } from "./routes/notifications";
+import { brainRouter } from "./routes/brain";
 import { log } from "../../../security/logger";
 
 export function createApp(): Express {
@@ -30,6 +31,7 @@ export function createApp(): Express {
   app.use("/memory", memoryRouter);
   app.use("/system", systemRouter);
   app.use("/notifications", notificationsRouter);
+  app.use("/brain", brainRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: `No route for ${req.method} ${req.path}` });
