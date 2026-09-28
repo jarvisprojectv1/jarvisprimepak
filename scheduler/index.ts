@@ -304,4 +304,24 @@ export async function registerExampleJobs(): Promise<void> {
       // creates the task; nothing else to do here.
     },
   });
+
+  // Phase 5 (Autonomous Daily Cycle, #8): the evening half of the daily
+  // cycle. Same pattern as morning-briefing above - the cron callback only
+  // publishes SCHEDULE.fired; the seeded "daily-report" ConditionRule
+  // (core/conditions/rules.ts) creates a task tagged toolName:"reports", so
+  // the worker executes it directly through tools/reports.ts (which calls
+  // core/reports/dailyReport.ts) - the same guarded tool-registry path as
+  // any other tool call. Kept as a genuinely separate job (rather than
+  // folding into morning-briefing) since it fires 14 hours later and creates
+  // a differently-tagged task.
+  await scheduler.register({
+    name: "daily-report",
+    triggerType: "daily",
+    schedule: "0 21 * * *", // 21:00 every day
+    timezone: "UTC",
+    handler: () => {
+      // The ConditionRule matching SCHEDULE.fired{jobName:"daily-report"}
+      // creates the task; nothing else to do here.
+    },
+  });
 }

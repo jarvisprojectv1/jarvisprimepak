@@ -14,6 +14,8 @@ import { listAgents } from "../../agents/registry";
 import { Memory } from "../memory";
 import { publish, subscribe } from "../events";
 import { appConfig } from "../../config/env";
+import { getHeartbeat, isStale } from "../worker/heartbeat";
+import { getWorkerConfig } from "../worker/config";
 
 export type HealthStatus = "HEALTHY" | "DEGRADED" | "FAILED" | "UNKNOWN";
 
@@ -50,7 +52,7 @@ async function checkDatabase(): Promise<ComponentHealth> {
 }
 
 async function checkScheduler(): Promise<ComponentHealth> {
-  const expectedJobs = ["daily-heartbeat", "hourly-stale-lead-check", "morning-briefing"];
+  const expectedJobs = ["daily-heartbeat", "hourly-stale-lead-check", "morning-briefing", "daily-report"];
   const running = expectedJobs.filter((name) => scheduler.isRunning(name));
   if (running.length === expectedJobs.length) {
     return { status: "HEALTHY", reason: `All ${expectedJobs.length} expected cron jobs are running.` };
@@ -154,6 +156,35 @@ async function checkResources(): Promise<ComponentHealth> {
   };
 }
 
+// Phase 5: 11th check - the Autonomous Worker's own liveness, via its DB
+// heartbeat (see core/worker/heartbeat.ts). UNKNOWN if the worker has never
+// started in this process (e.g. a test harness that never boots
+// apps/api/src/index.ts) - never a fabricated HEALTHY.
+async function checkWorker(): Promise<ComponentHealth> {
+  try {
+    const config = await getWorkerConfig();
+    const heartbeat = await getHeartbeat("worker-1");
+    if (!heartbeat) {
+      return { status: "UNKNOWN", reason: "No worker heartbeat recorded yet." };
+    }
+    if (heartbeat.status === "CRASHED") {
+      return { status: "FAILED", reason: "Worker watchdog gave up after repeated restart attempts." };
+    }
+    if (isStale(heartbeat, config.heartbeatTimeoutMs)) {
+      return { status: "FAILED", reason: `Worker heartbeat is stale (last update ${heartbeat.lastHeartbeat.toISOString()}).` };
+    }
+    if (heartbeat.status === "DEGRADED") {
+      return { status: "DEGRADED", reason: "Worker reported DEGRADED status." };
+    }
+    return {
+      status: "HEALTHY",
+      reason: `Worker "${heartbeat.workerId}" is ${heartbeat.status}; processed ${heartbeat.processedTasks}, failed ${heartbeat.failedTasks}.`,
+    };
+  } catch {
+    return { status: "UNKNOWN", reason: "Could not read the worker heartbeat." };
+  }
+}
+
 function aggregate(components: Record<string, ComponentHealth>): HealthStatus {
   const statuses = Object.values(components).map((c) => c.status);
   if (statuses.includes("FAILED")) return "FAILED";
@@ -163,7 +194,7 @@ function aggregate(components: Record<string, ComponentHealth>): HealthStatus {
 }
 
 export async function getSystemHealth(): Promise<SystemHealthReport> {
-  const [api, database, schedulerHealth, eventBus, taskQueue, agents, tools, memory, disk, resources] =
+  const [api, database, schedulerHealth, eventBus, taskQueue, agents, tools, memory, disk, resources, workerHealth] =
     await Promise.all([
       checkApi(),
       checkDatabase(),
@@ -175,6 +206,7 @@ export async function getSystemHealth(): Promise<SystemHealthReport> {
       checkMemory(),
       checkDisk(),
       checkResources(),
+      checkWorker(),
     ]);
 
   const components: Record<string, ComponentHealth> = {
@@ -188,6 +220,7 @@ export async function getSystemHealth(): Promise<SystemHealthReport> {
     memory,
     disk,
     resources,
+    worker: workerHealth,
   };
 
   return {

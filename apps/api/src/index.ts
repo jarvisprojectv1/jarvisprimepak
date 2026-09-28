@@ -10,6 +10,7 @@ import { log } from "../../../security/logger";
 import { recoverUnfinishedTasks } from "../../../core/tasks";
 import { registerDefaultSubscribers } from "../../../core/events";
 import { seedExampleConditionRules } from "../../../core/conditions/rules";
+import { worker } from "../../../core/worker";
 
 async function main() {
   applyPendingMigrations();
@@ -38,6 +39,25 @@ async function main() {
     await registerExampleJobs();
   } catch (err) {
     log("WARNING", "scheduler.init_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Phase 5: the Autonomous Worker - an in-process interval that keeps
+  // running for as long as THIS process is alive (not a separate OS-level
+  // daemon; see docs/PHASE5_AUTONOMOUS_WORKER.md). Started once, right after
+  // crash recovery, alongside the rest of boot.
+  try {
+    await worker.start();
+    // Watchdog runs on its own, slower interval - separate from the worker's
+    // own tick/heartbeat timers, since a dead tick timer can't watch itself.
+    setInterval(() => {
+      worker.watchdogPass().catch((err) =>
+        log("ERROR", "worker.watchdog_failed", { error: err instanceof Error ? err.message : String(err) })
+      );
+    }, 15_000);
+  } catch (err) {
+    log("WARNING", "worker.start_failed", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
