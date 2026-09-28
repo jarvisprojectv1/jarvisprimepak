@@ -1,0 +1,378 @@
+// JARVIS - Prisma schema (Phase 1: Foundation)
+// SQLite is used so the whole system runs with zero external infrastructure.
+// Enums are not natively supported by SQLite, so "enum-like" fields are plain
+// Strings with the allowed values documented and validated in application code
+// (see core/memory, core/decision_engine, etc).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity & people
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  role      String   @default("owner") // owner | admin | staff
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks         Task[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+model Contact {
+  id        String   @id @default(uuid())
+  firstName String
+  lastName  String?
+  email     String?
+  phone     String?
+  title     String?
+  companyId String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company        Company?        @relation(fields: [companyId], references: [id])
+  leads          Lead[]
+  communications Communication[]
+  calls          Call[]
+  emails         Email[]
+
+  @@map("contacts")
+}
+
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  industry  String?
+  website   String?
+  phone     String?
+  address   String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts Contact[]
+  leads    Lead[]
+  clients  Client[]
+  quotes   Quote[]
+  orders   Order[]
+
+  @@map("companies")
+}
+
+// ---------------------------------------------------------------------------
+// CRM / pipeline
+// ---------------------------------------------------------------------------
+
+model Lead {
+  id         String   @id @default(uuid())
+  companyId  String?
+  contactId  String?
+  source     String? // e.g. "manual", "web-form", "cold-call" (Phase 2+)
+  status     String   @default("NEW") // NEW | CONTACTED | QUALIFIED | WON | LOST
+  value      Float?
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id])
+  contact Contact? @relation(fields: [contactId], references: [id])
+
+  @@map("leads")
+}
+
+model Client {
+  id        String   @id @default(uuid())
+  companyId String?
+  status    String   @default("ACTIVE") // ACTIVE | INACTIVE | ARCHIVED
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id])
+  orders  Order[]
+  quotes  Quote[]
+
+  @@map("clients")
+}
+
+// ---------------------------------------------------------------------------
+// Communications (Phase 2+ channels are stubbed at the tool layer, not here)
+// ---------------------------------------------------------------------------
+
+model Communication {
+  id        String   @id @default(uuid())
+  contactId String?
+  channel   String // email | call | sms | whatsapp | chat
+  direction String // inbound | outbound
+  summary   String?
+  createdAt DateTime @default(now())
+
+  contact Contact? @relation(fields: [contactId], references: [id])
+
+  @@map("communications")
+}
+
+model Call {
+  id           String    @id @default(uuid())
+  contactId    String?
+  direction    String // inbound | outbound
+  status       String    @default("NOT_IMPLEMENTED") // NOT_IMPLEMENTED until Phase 2 telephony is wired
+  durationSecs Int?
+  transcript   String?
+  startedAt    DateTime?
+  endedAt      DateTime?
+  createdAt    DateTime  @default(now())
+
+  contact Contact? @relation(fields: [contactId], references: [id])
+
+  @@map("calls")
+}
+
+model Email {
+  id        String   @id @default(uuid())
+  contactId String?
+  direction String // inbound | outbound
+  subject   String?
+  body      String?
+  status    String   @default("NOT_IMPLEMENTED") // NOT_IMPLEMENTED until Phase 2 email sending is wired
+  createdAt DateTime @default(now())
+
+  contact Contact? @relation(fields: [contactId], references: [id])
+
+  @@map("emails")
+}
+
+// ---------------------------------------------------------------------------
+// Commercial documents
+// ---------------------------------------------------------------------------
+
+model Product {
+  id          String   @id @default(uuid())
+  sku         String   @unique
+  name        String
+  description String?
+  unitPrice   Float?
+  unit        String? // e.g. "case", "kg", "roll"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("products")
+}
+
+model Quote {
+  id        String   @id @default(uuid())
+  clientId  String?
+  companyId String?
+  status    String   @default("DRAFT") // DRAFT | SENT | ACCEPTED | REJECTED
+  total     Float?
+  lineItems String? // JSON-encoded array; kept simple for Phase 1
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  client  Client?  @relation(fields: [clientId], references: [id])
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@map("quotes")
+}
+
+model Order {
+  id        String   @id @default(uuid())
+  clientId  String?
+  companyId String?
+  status    String   @default("PENDING") // PENDING | CONFIRMED | FULFILLED | CANCELLED
+  total     Float?
+  lineItems String? // JSON-encoded array; kept simple for Phase 1
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  client  Client?  @relation(fields: [clientId], references: [id])
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@map("orders")
+}
+
+// ---------------------------------------------------------------------------
+// Work: tasks & agents
+// ---------------------------------------------------------------------------
+
+model Task {
+  id          String    @id @default(uuid())
+  title       String
+  description String?
+  status      String    @default("PENDING") // PENDING | IN_PROGRESS | BLOCKED | DONE | FAILED
+  priority    String    @default("NORMAL") // LOW | NORMAL | HIGH | URGENT
+  ownerId     String?
+  parentId    String?
+  dueAt       DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  owner    User?  @relation(fields: [ownerId], references: [id])
+  parent   Task?  @relation("TaskSubtasks", fields: [parentId], references: [id])
+  subtasks Task[] @relation("TaskSubtasks")
+
+  @@map("tasks")
+}
+
+model Agent {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  objective   String
+  status      String   @default("IDLE") // IDLE | RUNNING | NOT_IMPLEMENTED | ERROR
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  runs AgentRun[]
+
+  @@map("agents")
+}
+
+model AgentRun {
+  id        String    @id @default(uuid())
+  agentId   String
+  status    String    @default("RUNNING") // RUNNING | SUCCESS | FAILED | NOT_IMPLEMENTED
+  input     String?
+  output    String?
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  agent Agent @relation(fields: [agentId], references: [id])
+
+  @@map("agent_runs")
+}
+
+// ---------------------------------------------------------------------------
+// Memory (see core/memory) - append-only, namespaced
+// ---------------------------------------------------------------------------
+
+model Memory {
+  id         String    @id @default(uuid())
+  namespace  String // PERSONAL | BUSINESS | CLIENT | PROJECT | PREFERENCE | KNOWLEDGE | TASK | CONVERSATION | EVENT
+  key        String // logical key a value belongs to, used for conflict/history resolution
+  value      String // JSON-encoded payload
+  importance Int       @default(5) // 1 (low) - 10 (critical)
+  status     String    @default("ACTIVE") // ACTIVE | ARCHIVED
+  supersedes String? // id of the memory entry this one replaces, if any
+  createdAt  DateTime  @default(now())
+  archivedAt DateTime?
+
+  @@index([namespace, key])
+  @@map("memory")
+}
+
+// ---------------------------------------------------------------------------
+// System: events, automations, notifications, documents, knowledge, skills
+// ---------------------------------------------------------------------------
+
+model Event {
+  id        String   @id @default(uuid())
+  type      String
+  payload   String? // JSON-encoded
+  source    String?
+  createdAt DateTime @default(now())
+
+  @@map("events")
+}
+
+model Automation {
+  id           String    @id @default(uuid())
+  name         String    @unique
+  triggerType  String // one_time | daily | weekly | monthly | interval | event | condition
+  schedule     String? // cron expression or ISO date, depending on triggerType
+  enabled      Boolean   @default(true)
+  lastRunAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("automations")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String?
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("notifications")
+}
+
+model Document {
+  id        String   @id @default(uuid())
+  title     String
+  path      String? // path within the sandboxed file store
+  mimeType  String?
+  sizeBytes Int?
+  createdAt DateTime @default(now())
+
+  @@map("documents")
+}
+
+model Knowledge {
+  id        String   @id @default(uuid())
+  topic     String
+  content   String
+  source    String?
+  createdAt DateTime @default(now())
+
+  @@map("knowledge")
+}
+
+model Skill {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("skills")
+}
+
+// ---------------------------------------------------------------------------
+// Observability & security
+// ---------------------------------------------------------------------------
+
+model SystemLog {
+  id        String   @id @default(uuid())
+  category  String // INFO | WARNING | ERROR | CRITICAL | ACTION | AGENT | TOOL | SECURITY | BUSINESS | VOICE
+  message   String
+  meta      String? // JSON-encoded, redacted
+  createdAt DateTime @default(now())
+
+  @@map("system_logs")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actor     String // user id, "system", or agent name
+  action    String
+  target    String?
+  meta      String? // JSON-encoded, redacted
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model Setting {
+  key       String   @id
+  value     String // JSON-encoded
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}

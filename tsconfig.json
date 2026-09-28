@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "noEmit": true
+  },
+  "include": [
+    "core/**/*.ts",
+    "agents/**/*.ts",
+    "tools/**/*.ts",
+    "scheduler/**/*.ts",
+    "security/**/*.ts",
+    "config/**/*.ts",
+    "database/**/*.ts"
+  ],
+  "exclude": ["node_modules", "apps"]
+}
