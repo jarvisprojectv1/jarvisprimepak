@@ -39,3 +39,24 @@ describe("core/events - event bus", () => {
     expect(called).toBe(false);
   });
 });
+
+describe("core/events - typed event validation (Phase 3)", () => {
+  it("rejects publish of a typed event with an unknown category", async () => {
+    await expect(publish({ type: "BOGUS.something", payload: {} })).rejects.toThrow();
+  });
+
+  it("rejects publish of a typed event whose payload fails its category's shape check", async () => {
+    await expect(publish({ type: "SCHEDULE.fired", payload: { notJobName: 1 } })).rejects.toThrow();
+    await expect(publish({ type: "TASK.updated", payload: { notTaskId: 1 } })).rejects.toThrow();
+  });
+
+  it("accepts a well-formed typed event", async () => {
+    const event = await publish({ type: "SCHEDULE.fired", payload: { jobName: "unit-test-job" } });
+    expect(event.type).toBe("SCHEDULE.fired");
+  });
+
+  it("still accepts legacy, lowercase-prefixed event types unvalidated (backward compatibility)", async () => {
+    const event = await publish({ type: "legacy.arbitrary.event", payload: { anything: true } });
+    expect(event.type).toBe("legacy.arbitrary.event");
+  });
+});

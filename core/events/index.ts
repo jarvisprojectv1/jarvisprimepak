@@ -9,6 +9,7 @@
 import { prisma } from "../../database/client";
 import { log } from "../../security/logger";
 import { redact } from "../../security/redact";
+import { validateEvent } from "./schemas";
 
 export interface EventInput {
   type: string;
@@ -52,7 +53,33 @@ export function subscribe(eventType: string, handler: EventHandler): () => void 
  * optimization, but Phase 2 keeps it simple and synchronous for
  * predictability in tests).
  */
+/**
+ * Typed-event validation heuristic (Phase 3 / Identity & Events): only
+ * events whose type is prefixed with an ALL-CAPS category segment (the
+ * documented convention for typed events, e.g. "SCHEDULE.fired",
+ * "CRM.lead.created") are validated against core/events/schemas.ts. Legacy,
+ * lowercase-prefixed event types (e.g. "scheduler.fired", "task.created",
+ * arbitrary test event names) pass through unvalidated for backward
+ * compatibility with code written before this typed-schema layer existed.
+ * A caller that DOES use the ALL-CAPS convention but names an unknown
+ * category, or sends a payload that fails that category's shape check, is
+ * rejected - this is what lets validateEvent() genuinely reject malformed/
+ * unknown-type events rather than being decorative.
+ */
+function looksTyped(eventType: string): boolean {
+  const prefix = eventType.split(".")[0];
+  return /^[A-Z_]+$/.test(prefix);
+}
+
 export async function publish(event: EventInput): Promise<PersistedEvent> {
+  if (looksTyped(event.type)) {
+    const result = validateEvent(event.type, event.payload);
+    if (!result.valid) {
+      log("WARNING", "events.rejected_invalid", { type: event.type, reason: result.reason });
+      throw new Error(`Event validation failed for "${event.type}": ${result.reason}`);
+    }
+  }
+
   const safePayload = event.payload !== undefined ? redact(event.payload) : undefined;
   const row = await prisma.event.create({
     data: {
@@ -76,6 +103,22 @@ export async function publish(event: EventInput): Promise<PersistedEvent> {
       await handler(persisted);
     } catch (err) {
       log("ERROR", "events.handler_error", {
+        eventType: event.type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Event routing (Phase 3): a registry mapping event type -> the condition
+  // engine, rather than each subscriber hardcoding what it listens for. Only
+  // typed events are routed (see looksTyped()) - legacy free-form event
+  // types have no ConditionRule rows to match against anyway.
+  if (looksTyped(event.type)) {
+    try {
+      const { runConditionRulesForEvent } = await import("../conditions/rules");
+      await runConditionRulesForEvent(persisted);
+    } catch (err) {
+      log("ERROR", "events.condition_routing_error", {
         eventType: event.type,
         error: err instanceof Error ? err.message : String(err),
       });
