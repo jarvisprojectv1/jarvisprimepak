@@ -6,7 +6,7 @@
 // gate that Task's execution must pass before it may actually send anything.
 import { prisma } from "../../database/client";
 import { getSystemState } from "../state";
-import { isSuppressed } from "./antiSpam";
+import { isSuppressed, isWhatsAppSuppressed } from "./antiSpam";
 import { planTask } from "../planner";
 import { log } from "../../security/logger";
 
@@ -52,6 +52,8 @@ export async function isFollowUpAllowed(input: {
   sinceTaskCreatedAt: Date;
   /** Phase 7.1: the lead this follow-up concerns, if any - checked for WON/LOST/NURTURE closure. */
   leadId?: string | null;
+  /** Phase 8 (item 20): "EMAIL" | "WHATSAPP" - which suppression/pending-approval target to check. Defaults to "EMAIL" (Phase 7 behavior unchanged). */
+  channel?: "EMAIL" | "WHATSAPP";
 }): Promise<FollowUpCheckResult> {
   const state = await getSystemState();
   if (state.state === "EMERGENCY_STOP") return { allowed: false, reason: "System is in EMERGENCY_STOP." };
@@ -73,34 +75,39 @@ export async function isFollowUpAllowed(input: {
     }
   }
 
-  let contactEmail: string | null | undefined;
+  const channel = input.channel ?? "EMAIL";
+  let contactTarget: string | null | undefined;
   if (input.contactId) {
     const contact = await prisma.contact.findUnique({ where: { id: input.contactId } });
-    contactEmail = contact?.email;
+    contactTarget = channel === "WHATSAPP" ? contact?.normalizedPhone ?? contact?.phone : contact?.email;
 
-    const suppressed = await isSuppressed(contactEmail);
+    const suppressed = channel === "WHATSAPP" ? await isWhatsAppSuppressed(contactTarget) : await isSuppressed(contactTarget);
     if (suppressed) return { allowed: false, reason: "Contact is suppressed (unsubscribed/bounced)." };
 
     // Belt-and-suspenders: Contact.unsubscribed can in principle be true
     // without a matching SuppressedContact row (e.g. set directly), so this
-    // is checked too, even though suppressContact() normally keeps both in
-    // sync and the isSuppressed() check above already covers the common case.
+    // is checked too, even though suppressContact()/suppressWhatsAppContact()
+    // normally keep both in sync and the channel check above already covers
+    // the common case.
     if (contact?.unsubscribed) {
       return { allowed: false, reason: "Contact is suppressed (unsubscribed)." };
     }
 
+    // Item 22 (cross-channel duplicate protection): checks for an inbound
+    // Communication row on ANY channel since scheduling, not just this
+    // follow-up's own channel - deliberately NOT filtered by `channel` here.
     const reply = await prisma.communication.findFirst({
       where: { contactId: input.contactId, direction: "inbound", createdAt: { gt: input.sinceTaskCreatedAt } },
     });
     if (reply) return { allowed: false, reason: "Customer replied since this follow-up was scheduled - cancelling." };
 
     // Item 5: no follow-up while an earlier outbound message to the same
-    // contact still has a PENDING approval - sending a follow-up on top of
-    // an unresolved HIGH-RISK send would confuse the pipeline and could race
-    // the owner's eventual decision.
-    if (contactEmail) {
+    // contact/channel still has a PENDING approval - sending a follow-up on
+    // top of an unresolved HIGH-RISK send would confuse the pipeline and
+    // could race the owner's eventual decision.
+    if (contactTarget) {
       const pendingApproval = await prisma.approvalRequest.findFirst({
-        where: { status: "PENDING", target: contactEmail },
+        where: { status: "PENDING", target: contactTarget },
       });
       if (pendingApproval) {
         return { allowed: false, reason: `An earlier outbound message to this contact has a PENDING approval (${pendingApproval.id}) - skipping follow-up until it is resolved.` };
@@ -127,6 +134,8 @@ export interface ScheduleFollowUpInput {
   subject: string;
   body: string;
   scheduledFor: Date;
+  /** Phase 8 (item 20): "EMAIL" | "WHATSAPP" - which tool the dispatch pass tags the Task with. Defaults to "EMAIL" (Phase 7 behavior unchanged). */
+  channel?: "EMAIL" | "WHATSAPP";
 }
 
 export interface FollowUpRecord {
@@ -134,6 +143,7 @@ export interface FollowUpRecord {
   leadId: string | null;
   contactId: string | null;
   sequenceStep: number;
+  channel: string;
   subject: string;
   body: string;
   scheduledFor: Date;
@@ -165,6 +175,7 @@ export async function scheduleFollowUp(input: ScheduleFollowUpInput): Promise<Fo
         leadId: input.leadId ?? null,
         contactId: input.contactId ?? null,
         sequenceStep: input.sequenceStep,
+        channel: input.channel ?? "EMAIL",
         subject: input.subject,
         body: input.body,
         scheduledFor: input.scheduledFor,
@@ -203,11 +214,16 @@ export async function scheduleDueFollowUps(now: Date = new Date()): Promise<{ di
 
   let dispatched = 0;
   for (const followUp of due) {
+    // Phase 8 (item 20): SAME dispatch pass / hourly job for both channels -
+    // the only difference is which tool the Task is tagged with, exactly
+    // like the worker already dispatches any toolName-tagged task
+    // (core/worker/index.ts's processClaimedTask required no change here).
+    const toolName = followUp.channel === "WHATSAPP" ? "whatsapp" : "email";
     const task = await planTask({
       title: `Follow-up (step ${followUp.sequenceStep})`,
       description: `Automated follow-up for FollowUp ${followUp.id}.`,
       priority: "LOW",
-      toolName: "email",
+      toolName,
     });
     const rootTaskId = task[0].id;
 

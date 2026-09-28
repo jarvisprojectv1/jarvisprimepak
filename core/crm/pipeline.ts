@@ -38,5 +38,10 @@ export const ACTIVITY_TYPES = [
   "SAMPLE_REQUESTED",
   "FOLLOW_UP",
   "TASK_LINKED",
+  // Phase 8 (WhatsApp): the same activity-feed shape as EMAIL_SENT/
+  // EMAIL_RECEIVED, recorded through the SAME recordActivity() every other
+  // channel uses (core/crm/activity.ts) - no parallel activity system.
+  "WHATSAPP_SENT",
+  "WHATSAPP_RECEIVED",
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];

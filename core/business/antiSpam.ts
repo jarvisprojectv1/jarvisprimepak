@@ -4,7 +4,7 @@
 // tool/agent rate limiting stays in core/limits; this module is specifically
 // about OUTBOUND CUSTOMER COMMUNICATION volume/hygiene).
 import { prisma } from "../../database/client";
-import { normalizeEmail } from "../crm/dedup";
+import { normalizeEmail, normalizePhone } from "../crm/dedup";
 
 export interface AntiSpamConfig {
   perAccountDailyLimit: number;
@@ -69,6 +69,57 @@ export async function suppressContact(email: string, reason: "UNSUBSCRIBE" | "BO
   }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8 (WhatsApp, item 10): the SAME SuppressedContact table/mechanism,
+// extended to a second identifier (normalizedPhone) rather than a parallel
+// WhatsApp-only suppression table - see database/schema.prisma's
+// SuppressedContact comment. isWhatsAppSuppressed()/suppressWhatsAppContact()
+// are the phone-keyed siblings of isSuppressed()/suppressContact() above,
+// same fail-closed-on-unparseable-number discipline as normalizePhone().
+// ---------------------------------------------------------------------------
+export async function isWhatsAppSuppressed(rawPhone: string | null | undefined): Promise<boolean> {
+  if (!rawPhone) return false;
+  const { normalized, valid } = normalizePhone(rawPhone);
+  if (!valid || !normalized) return false; // an unparseable number can't be looked up; the caller's own UNRESOLVED_CONTACT path handles that case
+  const row = await prisma.suppressedContact.findUnique({ where: { normalizedPhone: normalized } });
+  return Boolean(row);
+}
+
+export async function suppressWhatsAppContact(rawPhone: string, reason: "UNSUBSCRIBE" | "BOUNCE" | "MANUAL" | "COMPLAINT", contactId?: string): Promise<void> {
+  const { normalized, valid } = normalizePhone(rawPhone);
+  if (!valid || !normalized) return;
+  await prisma.suppressedContact.upsert({
+    where: { normalizedPhone: normalized },
+    update: { reason },
+    create: { normalizedPhone: normalized, reason, contactId: contactId ?? null },
+  });
+  if (contactId) {
+    await prisma.contact.update({ where: { id: contactId }, data: { unsubscribed: true } });
+  } else {
+    await prisma.contact.updateMany({ where: { normalizedPhone: normalized }, data: { unsubscribed: true } });
+  }
+}
+
+// Phase 8 (item 10): a short, precise, deterministic opt-out phrase list -
+// NEVER fuzzy sentiment analysis. Matched case/whitespace-insensitively
+// against the ENTIRE trimmed message body (not a substring search across an
+// arbitrary sentence) so ordinary conversation that happens to contain one
+// of these words is not misread as an opt-out (e.g. "please stop calling
+// after 6pm" does not match; a standalone "STOP" does).
+const OPT_OUT_PHRASES = ["stop", "unsubscribe", "remove me", "do not message", "do not contact", "opt out", "optout"];
+
+/**
+ * Deterministic opt-out detection for inbound WhatsApp text (item 10).
+ * Returns true only for an exact (post-normalization) match against the
+ * fixed phrase list above - never a heuristic/LLM judgment call, since a
+ * false positive here silently and permanently stops legitimate outreach.
+ */
+export function isOptOutMessage(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const normalized = text.trim().toLowerCase().replace(/[.!?]+$/, "").replace(/\s+/g, " ");
+  return OPT_OUT_PHRASES.includes(normalized);
+}
+
 function startOfDayUtc(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -107,6 +158,39 @@ export async function checkAntiSpamLimits(input: { toEmail: string }): Promise<A
   const normalized = normalizeEmail(input.toEmail);
   if (normalized) {
     const contact = await prisma.contact.findFirst({ where: { normalizedEmail: normalized } });
+    if (contact?.lastContactedAt) {
+      const cooldownMs = config.perContactCooldownHours * 60 * 60 * 1000;
+      const elapsed = Date.now() - contact.lastContactedAt.getTime();
+      if (elapsed < cooldownMs) {
+        return { allowed: false, reason: `Contact is within its ${config.perContactCooldownHours}h send cooldown (last contacted ${contact.lastContactedAt.toISOString()}).` };
+      }
+    }
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Phase 8 (items 12, 24): the WhatsApp analogue of checkAntiSpamLimits()
+ * above - SAME config (getAntiSpamConfig()), SAME OutboundSendLog ledger,
+ * SAME per-account/per-contact-cooldown shape, just keyed by normalized
+ * phone + `channel: "WHATSAPP"` instead of email/domain. Deliberately not a
+ * second, divergent limiter implementation - "per-domain" has no WhatsApp
+ * analogue (there is no domain concept for a phone number) so that check is
+ * simply omitted here rather than faked.
+ */
+export async function checkWhatsAppAntiSpamLimits(input: { toPhone: string }): Promise<AntiSpamCheckResult> {
+  const config = await getAntiSpamConfig();
+  const since = startOfDayUtc();
+
+  const dailyCount = await prisma.outboundSendLog.count({ where: { status: "SENT", channel: "WHATSAPP", createdAt: { gte: since } } });
+  if (dailyCount >= config.perAccountDailyLimit) {
+    return { allowed: false, reason: `Per-account daily WhatsApp send limit of ${config.perAccountDailyLimit} reached.` };
+  }
+
+  const { normalized } = normalizePhone(input.toPhone);
+  if (normalized) {
+    const contact = await prisma.contact.findFirst({ where: { normalizedPhone: normalized } });
     if (contact?.lastContactedAt) {
       const cooldownMs = config.perContactCooldownHours * 60 * 60 * 1000;
       const elapsed = Date.now() - contact.lastContactedAt.getTime();

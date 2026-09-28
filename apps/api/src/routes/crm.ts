@@ -7,25 +7,32 @@ import { requireAuth, requireAuthz } from "../middleware/auth";
 import { runLeadResearchWorkflow } from "../../../../core/crm/leadWorkflow";
 import { listProductCategories, upsertProductCategory } from "../../../../core/crm/businessConfig";
 import { prepareQuote, markQuoteReadyForApproval } from "../../../../core/business/quote";
-import { listActivityForEntity } from "../../../../core/crm/activity";
+import { listActivityForEntity, listUnifiedTimelineForContact } from "../../../../core/crm/activity";
 
 export const crmRouter = Router();
 
 crmRouter.get("/dashboard", requireAuth, requireAuthz("crm.read"), async (_req, res) => {
-  const [leadsByStatus, followUpsDue, pendingApprovals, unresolvedDuplicates, totalCompanies, totalContacts] = await Promise.all([
+  const [leadsByStatus, followUpsDue, pendingApprovals, unresolvedDuplicates, totalCompanies, totalContacts, pendingApprovalsByChannel, unresolvedWhatsAppContacts] = await Promise.all([
     prisma.lead.groupBy({ by: ["status"], _count: { status: true } }),
     prisma.task.count({ where: { title: { contains: "Follow" }, status: { in: ["PENDING", "QUEUED", "WAITING"] } } }),
     prisma.approvalRequest.count({ where: { status: "PENDING" } }),
     prisma.company.count({ where: { possibleDuplicate: true } }).then(async (c) => c + (await prisma.contact.count({ where: { possibleDuplicate: true } }))),
     prisma.company.count(),
     prisma.contact.count(),
+    // Phase 8 (item 21): per-channel breakdown, on the SAME ApprovalRequest table.
+    prisma.approvalRequest.groupBy({ by: ["action"], where: { status: "PENDING" }, _count: { action: true } }),
+    // Phase 8 (item 8): inbound WhatsApp messages that never resolved to a contact -
+    // real count of the Email rows with contactId null on the WHATSAPP channel.
+    prisma.email.count({ where: { channel: "WHATSAPP", direction: "inbound", contactId: null } }),
   ]);
 
   res.json({
     leadsByStatus: leadsByStatus.map((r) => ({ status: r.status, count: r._count.status })),
     followUpsDue,
     pendingApprovals,
+    pendingApprovalsByChannel: pendingApprovalsByChannel.map((r) => ({ action: r.action, count: r._count.action })),
     unresolvedPossibleDuplicates: unresolvedDuplicates,
+    unresolvedWhatsAppContacts,
     totalCompanies,
     totalContacts,
   });
@@ -56,6 +63,17 @@ crmRouter.post("/leads/from-research", requireAuth, requireAuthz("crm.write"), a
   }
   const result = await runLeadResearchWorkflow({ companyName, website, contactFirstName, contactLastName, contactEmail, source });
   res.json({ result });
+});
+
+// Phase 8 (item 21): the unified cross-channel timeline for one contact.
+crmRouter.get("/contacts/:id/timeline", requireAuth, requireAuthz("crm.read"), async (req, res) => {
+  const contact = await prisma.contact.findUnique({ where: { id: req.params.id } });
+  if (!contact) {
+    res.status(404).json({ error: "Contact not found." });
+    return;
+  }
+  const timeline = await listUnifiedTimelineForContact(req.params.id);
+  res.json({ contact, timeline });
 });
 
 crmRouter.get("/business-config/product-categories", requireAuth, requireAuthz("crm.read"), async (_req, res) => {

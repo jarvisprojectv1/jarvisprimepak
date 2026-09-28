@@ -78,6 +78,15 @@ model Contact {
   // boolean read is enough on the hot path.
   unsubscribed    Boolean   @default(false)
   lastContactedAt DateTime?
+  // Phase 8 (WhatsApp, item 9): E.164-style canonical phone form used for
+  // dedup/identity matching over WhatsApp - see core/crm/phone.ts. Kept
+  // separate from `phone` (the display/raw value) for the exact same reason
+  // normalizedEmail is kept separate from `email`: dedup must never depend
+  // on formatting. Nullable/non-unique at the DB level on purpose - two
+  // contacts can legitimately share no phone (most existing rows have none),
+  // and findOrCreateContactByPhone() (core/crm/dedup.ts) is what enforces
+  // "no fuzzy/ambiguous merge," not a DB constraint.
+  normalizedPhone String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -88,6 +97,7 @@ model Contact {
   emails         Email[]
 
   @@index([normalizedEmail])
+  @@index([normalizedPhone])
   @@map("contacts")
 }
 
@@ -211,10 +221,27 @@ model Call {
   @@map("calls")
 }
 
+// Phase 8 (WhatsApp & Unified Customer Communications, item 2): GENERALIZED
+// to be channel-aware rather than forked into a parallel WhatsAppMessage
+// table - despite the model/table name, this is now the message-log row for
+// BOTH channels (see docs/PHASE8_WHATSAPP.md's "which tables were
+// generalized" section for the full rationale). Every field below already
+// fit a WhatsApp message with no reinterpretation: `subject` is simply left
+// null for WhatsApp (it was already nullable), `toAddress`/`fromAddress`
+// hold phone numbers instead of email addresses, `providerMessageId` is the
+// WhatsApp message id (still the natural idempotent-upsert key - same
+// discipline as core/email/ingest.ts, see core/whatsapp/ingest.ts), and
+// `idempotencyKey`/`riskCategory` are computed by the SAME
+// core/business/idempotency.ts and core/business/outboundPolicy.ts every
+// email send already uses, just with `channel` folded into the key basis.
 model Email {
   id        String   @id @default(uuid())
   contactId String?
   direction String // inbound | outbound
+  // Phase 8 (item 2): "EMAIL" | "WHATSAPP" (other channels remain literal
+  // NOT_IMPLEMENTED strings at the tool layer, never built here). Defaults
+  // to "EMAIL" so every pre-Phase-8 row reads back unchanged.
+  channel   String   @default("EMAIL")
   subject   String?
   body      String?
   // Phase 7 (Email & CRM): real statuses once tools/email/ is configured -
@@ -242,6 +269,12 @@ model Email {
   // - see core/business/idempotency.ts and the OutboundSendLog table.
   idempotencyKey String? @unique
   relatedLeadId  String?
+  // Phase 8 (item 7): the provider's own conversation/thread id for a
+  // channel where that's a first-class concept distinct from `threadId`
+  // (email's In-Reply-To threading) - e.g. the WhatsApp Business Platform's
+  // conversation id, used for deterministic conversation identity together
+  // with the business account + contact (see core/whatsapp/conversation.ts).
+  providerConversationId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -249,6 +282,8 @@ model Email {
 
   @@index([threadId])
   @@index([relatedLeadId])
+  @@index([channel])
+  @@index([providerConversationId])
   @@map("emails")
 }
 
@@ -703,9 +738,21 @@ model SkillCandidate {
 // table is the record of truth behind it. Checked BEFORE outbound risk
 // classification even runs - see core/business/antiSpam.ts.
 // ---------------------------------------------------------------------------
+// Phase 8 (item 10): generalized to cover WhatsApp identifiers too, rather
+// than a parallel WhatsApp-only suppression table. `normalizedEmail` is
+// relaxed from required to optional (existing rows are unaffected - every
+// one already has a value) and `normalizedPhone` is added alongside it; a
+// row always has at least one of the two set (enforced in application code,
+// core/business/antiSpam.ts - SQLite has no CHECK-constraint support worth
+// relying on here, same "app-validated" convention as every status field in
+// this schema). Each identifier keeps its own unique constraint so an email
+// suppression and a phone suppression for the "same" real person remain two
+// independently-created, independently-auditable rows (never silently
+// merged) unless a caller explicitly links them via `contactId`.
 model SuppressedContact {
   id                String   @id @default(uuid())
-  normalizedEmail   String   @unique
+  normalizedEmail   String?  @unique
+  normalizedPhone   String?  @unique
   reason            String // UNSUBSCRIBE | BOUNCE | MANUAL | COMPLAINT
   contactId         String?
   createdAt         DateTime @default(now())
@@ -730,6 +777,11 @@ model FollowUp {
   leadId        String?
   contactId     String?
   sequenceStep  Int       @default(1)
+  // Phase 8 (item 20): "EMAIL" | "WHATSAPP" - which tool the dispatcher tags
+  // the Task with (toolName: "email" | "whatsapp"). Reuses the SAME
+  // scheduleDueFollowUps() dispatch pass / hourly job for both channels -
+  // deliberately NOT a second scheduler (see core/business/followUp.ts).
+  channel       String    @default("EMAIL")
   subject       String
   body          String
   scheduledFor  DateTime
@@ -761,6 +813,12 @@ model OutboundSendLog {
   taskId            String?
   contactId         String?
   emailId           String?
+  // Phase 8 (item 23): recorded for observability/filtering only - `channel`
+  // is ALSO folded into idempotencyKey's own hash basis (see
+  // core/business/idempotency.ts), so cross-channel idempotency does not
+  // depend on this column; it exists so a dashboard/report can group by
+  // channel without re-deriving it from the key.
+  channel           String   @default("EMAIL")
   // SENDING | SENT | FAILED | BLOCKED - SENDING is a Phase 7.1 addition: the
   // atomic-reservation row inserted by core/business/idempotency.ts's
   // reserveIdempotencyKey() the instant BEFORE the real provider call, so
@@ -786,6 +844,12 @@ model ApprovalRequest {
   proposedContent     String // JSON-encoded, e.g. { subject, body, to } - immutable once created
   supportingContext   String? // JSON-encoded (CRM context, research refs, etc.)
   riskClassification  String // HIGH | CRITICAL (only HIGH-risk-or-above actions ever reach this queue)
+  // Phase 8 (item 29): "EMAIL" | "WHATSAPP" - which channel this approval
+  // concerns. Additive/optional-by-default column for filtering; the actual
+  // channel/recipient-phone/conversation-id detail already lives in
+  // `supportingContext` JSON (no schema change needed there - see
+  // tools/whatsapp/whatsappTool.ts).
+  channel             String    @default("EMAIL")
   taskId              String?
   idempotencyKey      String?   @unique
   status              String    @default("PENDING") // PENDING | APPROVED | REJECTED | EXPIRED

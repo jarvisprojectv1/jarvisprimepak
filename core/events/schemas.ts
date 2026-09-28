@@ -13,6 +13,11 @@ export type EventCategory =
   | "AGENT"
   | "CRM"
   | "NOTIFICATION"
+  // Phase 8: WhatsApp inbound events (WHATSAPP_MESSAGE_RECEIVED etc.) -
+  // implemented for real, published by apps/api/src/routes/webhooks.ts
+  // AFTER signature verification + dedup, same discipline as WEB's own
+  // bounded, configured event source (Phase 6).
+  | "WHATSAPP"
   // Reserved, forward-compatible only - no source implemented in this phase.
   | "EMAIL"
   | "WEB"
@@ -28,6 +33,7 @@ export const ALL_EVENT_CATEGORIES: EventCategory[] = [
   "AGENT",
   "CRM",
   "NOTIFICATION",
+  "WHATSAPP",
   "EMAIL",
   "WEB",
   "MARKET",
@@ -49,6 +55,7 @@ const IMPLEMENTED_CATEGORIES = new Set<EventCategory>([
   "CRM",
   "NOTIFICATION",
   "WEB",
+  "WHATSAPP",
 ]);
 
 /**
@@ -107,6 +114,11 @@ const SHAPE_CHECKS: Record<string, (payload: unknown) => ShapeCheckResult> = {
   WEB: (p) => {
     if (!isPlainObject(p)) return { valid: false, reason: "WEB payload must be an object." };
     if (typeof p.topicName !== "string") return { valid: false, reason: "WEB payload requires a string 'topicName'." };
+    return { valid: true };
+  },
+  WHATSAPP: (p) => {
+    if (!isPlainObject(p)) return { valid: false, reason: "WHATSAPP payload must be an object." };
+    if (typeof p.providerMessageId !== "string") return { valid: false, reason: "WHATSAPP payload requires a string 'providerMessageId'." };
     return { valid: true };
   },
 };

@@ -17,17 +17,35 @@ import { researchRouter } from "./routes/research";
 import { skillsRouter } from "./routes/skills";
 import { crmRouter } from "./routes/crm";
 import { approvalsRouter } from "./routes/approvals";
+import { webhooksRouter } from "./routes/webhooks";
 import { log } from "../../../security/logger";
 
 export function createApp(): Express {
   const app = express();
   app.use(cors());
-  app.use(express.json());
+  // Phase 8 (item 5): the raw request body bytes are captured onto
+  // `req.rawBody` here, alongside JSON parsing, SPECIFICALLY so
+  // apps/api/src/routes/webhooks.ts can verify the WhatsApp Cloud API's
+  // X-Hub-Signature-256 HMAC against the EXACT bytes Meta signed - a
+  // reserialized `JSON.stringify(req.body)` is not guaranteed byte-identical
+  // to what was signed (key order, whitespace), so verifying against
+  // anything but the raw bytes would be an unreliable check dressed up as a
+  // real one.
+  app.use(
+    express.json({
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
+      },
+    })
+  );
 
-  // Unauthenticated: /health (liveness) and /auth/login (you can't log in if
-  // login itself requires a session). Everything else requires
-  // authentication (see apps/api/src/middleware/auth.ts), applied per-route.
+  // Unauthenticated: /health (liveness), /auth/login (you can't log in if
+  // login itself requires a session), and /webhooks (authenticated by
+  // provider signature instead of a session - see webhooks.ts). Everything
+  // else requires authentication (see apps/api/src/middleware/auth.ts),
+  // applied per-route.
   app.use("/health", healthRouter);
+  app.use("/webhooks", webhooksRouter);
   app.use("/auth", authRouter);
   app.use("/chat", chatRouter);
   app.use("/tools", toolsRouter);

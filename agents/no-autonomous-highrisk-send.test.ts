@@ -10,6 +10,8 @@ import path from "node:path";
 import { prisma } from "../database/client";
 import { createEmailTool } from "../tools/email/emailTool";
 import { MockEmailProvider } from "../tools/email/mockProvider";
+import { createWhatsAppTool } from "../tools/whatsapp/whatsappTool";
+import { MockWhatsAppProvider } from "../tools/whatsapp/mockProvider";
 
 beforeEach(async () => {
   await prisma.outboundSendLog.deleteMany();
@@ -94,7 +96,7 @@ describe("architectural proof: provider.sendMessage() is unreachable for a HIGH-
     expect(provider.getSentMessages().length).toBe(0);
   });
 
-  it("no other tool/module in the codebase makes an ACTUAL (non-comment) call to an EmailProvider's sendMessage (only emailTool.ts does)", async () => {
+  it("no other tool/module in the codebase makes an ACTUAL (non-comment) call to a provider's sendMessage - EXACTLY the email tool and the WhatsApp tool, nothing else (Phase 8, section 12)", async () => {
     const { execSync } = await import("node:child_process");
     const grepRoot = path.join(__dirname, "..");
     // -v filters out lines that are (after trimming) a // comment - so a
@@ -112,7 +114,161 @@ describe("architectural proof: provider.sendMessage() is unreachable for a HIGH-
           .filter(Boolean)
           .filter((f) => !f.endsWith(".test.ts"))
       ),
-    ];
-    expect(files).toEqual(["tools/email/emailTool.ts"]);
+    ].sort();
+    expect(files).toEqual(["tools/email/emailTool.ts", "tools/whatsapp/whatsappTool.ts"]);
+  });
+});
+
+describe("architectural proof: provider.sendMessage() is unreachable for a HIGH-RISK WhatsApp message without a prior APPROVED ApprovalRequest (Phase 8, mirrors the email proof above)", () => {
+  function stripLineComments(source: string): string {
+    return source
+      .split("\n")
+      .map((line) => {
+        const idx = line.indexOf("//");
+        return idx === -1 ? line : line.slice(0, idx);
+      })
+      .join("\n");
+  }
+
+  it("source-level (code only, comments stripped): sendMessage( is only called after classifyOutboundEmail/risk gating in whatsappTool.ts", async () => {
+    const raw = await fs.readFile(path.join(__dirname, "..", "tools", "whatsapp", "whatsappTool.ts"), "utf-8");
+    const source = stripLineComments(raw);
+    const sendCallIndex = source.indexOf("provider.sendMessage(");
+    const riskGateIndex = source.indexOf("classifyOutboundEmail(");
+    const approvalCheckIndex = source.indexOf('approval.status !== "APPROVED"');
+    expect(sendCallIndex).toBeGreaterThan(-1);
+    expect(riskGateIndex).toBeGreaterThan(-1);
+    expect(approvalCheckIndex).toBeGreaterThan(-1);
+    expect(riskGateIndex).toBeLessThan(sendCallIndex);
+    expect(approvalCheckIndex).toBeLessThan(sendCallIndex);
+    const occurrences = source.match(/provider\.sendMessage\(/g) ?? [];
+    expect(occurrences.length).toBe(1);
+  });
+
+  it("runtime: a HIGH-RISK WhatsApp send with no approvalRequestId never reaches the provider", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit, payment link: pay.example.com" });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: a HIGH-RISK WhatsApp send with a FORGED/nonexistent approvalRequestId still never reaches the provider", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const result = await tool.execute({
+      action: "send",
+      to: "+923001234567",
+      body: "Price: $1000 per unit.",
+      approvalRequestId: "nonexistent-id-12345",
+    });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: a HIGH-RISK WhatsApp send referencing a REJECTED approval still never reaches the provider", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const first = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit." });
+    const approvalId = (first.data as { approvalRequestId: string }).approvalRequestId;
+    await prisma.approvalRequest.update({ where: { id: approvalId }, data: { status: "REJECTED", decidedBy: "owner:test", decidedAt: new Date() } });
+
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approvalRequestId: approvalId });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: an EXPIRED WhatsApp approval still never reaches the provider", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const first = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit." });
+    const approvalId = (first.data as { approvalRequestId: string }).approvalRequestId;
+    await prisma.approvalRequest.update({ where: { id: approvalId }, data: { status: "EXPIRED" } });
+
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approvalRequestId: approvalId });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: a WhatsApp approval APPROVED for a DIFFERENT recipient does not authorize this send (target mismatch)", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const first = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit." });
+    const approvalId = (first.data as { approvalRequestId: string }).approvalRequestId;
+    await prisma.approvalRequest.update({ where: { id: approvalId }, data: { status: "APPROVED", decidedBy: "owner:test", decidedAt: new Date() } });
+
+    const result = await tool.execute({ action: "send", to: "+923009999999", body: "Price: $1000 per unit.", approvalRequestId: approvalId });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: a WhatsApp approval APPROVED for a different ACTION does not authorize a send (action mismatch)", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const approval = await prisma.approvalRequest.create({
+      data: {
+        action: "email.send",
+        reason: "test",
+        target: "+923001234567",
+        proposedContent: JSON.stringify({}),
+        riskClassification: "HIGH",
+        status: "APPROVED",
+        createdBy: "test",
+        decidedBy: "owner:test",
+        decidedAt: new Date(),
+      },
+    });
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approvalRequestId: approval.id });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: a REVOKED WhatsApp approval no longer authorizes the send", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const first = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit." });
+    const approvalId = (first.data as { approvalRequestId: string }).approvalRequestId;
+    await prisma.approvalRequest.update({ where: { id: approvalId }, data: { status: "REVOKED", decidedBy: "owner:test", decidedAt: new Date() } });
+
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approvalRequestId: approvalId });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: a caller-supplied truthy 'approved' input field is simply ignored - it is not part of the tool's input schema handling at all", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approved: true, approvedBy: "attacker", role: "OWNER" });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: an APPROVED request that has since expired (real time re-check at send, not decision time) still blocks", async () => {
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const first = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit." });
+    const approvalId = (first.data as { approvalRequestId: string }).approvalRequestId;
+    await prisma.approvalRequest.update({
+      where: { id: approvalId },
+      data: { status: "APPROVED", decidedBy: "owner:test", decidedAt: new Date(), expiresAt: new Date(Date.now() - 1000) },
+    });
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approvalRequestId: approvalId });
+    expect(result.status).toBe("BLOCKED");
+    expect(provider.getSentMessages().length).toBe(0);
+  });
+
+  it("runtime: an APPROVED, still-valid request that has SINCE been suppressed is still blocked (suppression is checked BEFORE the approval short-circuits anything)", async () => {
+    const { suppressWhatsAppContact } = await import("../core/business/antiSpam");
+    const provider = new MockWhatsAppProvider();
+    const tool = createWhatsAppTool(provider);
+    const first = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit." });
+    const approvalId = (first.data as { approvalRequestId: string }).approvalRequestId;
+    await prisma.approvalRequest.update({ where: { id: approvalId }, data: { status: "APPROVED", decidedBy: "owner:test", decidedAt: new Date() } });
+    await suppressWhatsAppContact("+923001234567", "UNSUBSCRIBE");
+
+    const result = await tool.execute({ action: "send", to: "+923001234567", body: "Price: $1000 per unit.", approvalRequestId: approvalId });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.message).toContain("suppression");
+    expect(provider.getSentMessages().length).toBe(0);
   });
 });

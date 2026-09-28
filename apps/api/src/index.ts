@@ -9,6 +9,7 @@ import { registerExampleJobs } from "../../../scheduler";
 import { log } from "../../../security/logger";
 import { recoverUnfinishedTasks } from "../../../core/tasks";
 import { registerDefaultSubscribers } from "../../../core/events";
+import { registerWhatsAppSubscriber } from "../../../core/whatsapp/subscriber";
 import { seedExampleConditionRules } from "../../../core/conditions/rules";
 import { worker } from "../../../core/worker";
 import { seedResearchTopics } from "../../../core/research/topics";
@@ -20,6 +21,7 @@ async function main() {
   registerBuiltinTools();
   registerBuiltinAgents();
   registerDefaultSubscribers();
+  registerWhatsAppSubscriber();
 
   try {
     await seedExampleConditionRules();

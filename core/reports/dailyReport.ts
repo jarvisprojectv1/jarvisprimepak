@@ -59,6 +59,18 @@ export interface DailyReportContent {
     leadsByStatus: Array<{ status: string; count: number }>;
     note: string;
   };
+  // Phase 8 (WhatsApp, item 45): SAME "real counts only" discipline as
+  // emailCrm above, filtered to channel "WHATSAPP" on the SAME generalized
+  // Email/ApprovalRequest tables - not a separate metrics pipeline.
+  whatsapp: {
+    providerConfigured: boolean;
+    messagesSentToday: number;
+    messagesReceivedToday: number;
+    pendingApprovals: number;
+    approvalsDecidedToday: number;
+    optOutsToday: number;
+    note: string;
+  };
 }
 
 function dateKeyUtc(d: Date): string {
@@ -92,6 +104,11 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
     pendingApprovals,
     approvalsDecidedToday,
     leadsByStatusRaw,
+    whatsappMessagesSentToday,
+    whatsappMessagesReceivedToday,
+    whatsappPendingApprovals,
+    whatsappApprovalsDecidedToday,
+    whatsappOptOutsToday,
   ] = await Promise.all([
     prisma.task.findMany({ where: { status: "DONE", updatedAt: { gte: start, lt: end } } }),
     prisma.task.findMany({ where: { status: "FAILED", updatedAt: { gte: start, lt: end } } }),
@@ -104,16 +121,29 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
     prisma.lead.count({ where: { status: { in: ["NEW", "CONTACTED", "QUALIFIED"] } } }).catch(() => "no data" as const),
     prisma.researchRun.count({ where: { startedAt: { gte: start, lt: end } } }),
     prisma.event.count({ where: { type: "WEB.new_research_result", createdAt: { gte: start, lt: end } } }),
-    prisma.email.count({ where: { direction: "outbound", status: "SENT", createdAt: { gte: start, lt: end } } }),
-    prisma.email.count({ where: { direction: "inbound", createdAt: { gte: start, lt: end } } }),
+    // Phase 8: explicitly filtered to channel "EMAIL" - the Email table now
+    // also holds WhatsApp rows (see database/schema.prisma's Email.channel
+    // comment), so these counts would otherwise silently double-count
+    // WhatsApp messages into the email-specific section below.
+    prisma.email.count({ where: { channel: "EMAIL", direction: "outbound", status: "SENT", createdAt: { gte: start, lt: end } } }),
+    prisma.email.count({ where: { channel: "EMAIL", direction: "inbound", createdAt: { gte: start, lt: end } } }),
     prisma.lead.count({ where: { researchRunId: { not: null }, createdAt: { gte: start, lt: end } } }),
-    prisma.approvalRequest.count({ where: { status: "PENDING" } }),
-    prisma.approvalRequest.count({ where: { status: { in: ["APPROVED", "REJECTED"] }, updatedAt: { gte: start, lt: end } } }),
+    // Phase 8: filtered to action "email.send" for the same double-counting
+    // reason as the Email queries above - a WhatsApp approval is counted in
+    // the `whatsapp` section instead.
+    prisma.approvalRequest.count({ where: { status: "PENDING", action: "email.send" } }),
+    prisma.approvalRequest.count({ where: { status: { in: ["APPROVED", "REJECTED"] }, action: "email.send", updatedAt: { gte: start, lt: end } } }),
     prisma.lead.groupBy({ by: ["status"], _count: { status: true } }),
+    prisma.email.count({ where: { channel: "WHATSAPP", direction: "outbound", status: "SENT", createdAt: { gte: start, lt: end } } }),
+    prisma.email.count({ where: { channel: "WHATSAPP", direction: "inbound", createdAt: { gte: start, lt: end } } }),
+    prisma.approvalRequest.count({ where: { status: "PENDING", action: "whatsapp.send" } }),
+    prisma.approvalRequest.count({ where: { status: { in: ["APPROVED", "REJECTED"] }, action: "whatsapp.send", updatedAt: { gte: start, lt: end } } }),
+    prisma.email.count({ where: { channel: "WHATSAPP", classification: "UNSUBSCRIBE_REQUEST", createdAt: { gte: start, lt: end } } }),
   ]);
 
   const webResearchConfigured = Boolean(process.env.BRAVE_SEARCH_API_KEY && process.env.BRAVE_SEARCH_API_KEY.trim() !== "");
   const emailProviderConfigured = Boolean(process.env.GMAIL_ACCESS_TOKEN && process.env.GMAIL_USER_EMAIL);
+  const whatsappProviderConfigured = Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_BUSINESS_ACCOUNT_ID);
   const leadsByStatus = leadsByStatusRaw.map((r) => ({ status: r.status, count: r._count.status }));
 
   const now = Date.now();
@@ -159,6 +189,17 @@ export async function generateDailyReport(forDate: Date = todayUtc()): Promise<D
       note: emailProviderConfigured
         ? `Email capability is configured; ${emailsSentToday} sent / ${emailsReceivedToday} received today, ${pendingApprovals} approval(s) pending.`
         : `Email sending/receiving is not configured (no GMAIL_ACCESS_TOKEN/GMAIL_USER_EMAIL); CRM pipeline counts below are still real. ${pendingApprovals} approval(s) pending.`,
+    },
+    whatsapp: {
+      providerConfigured: whatsappProviderConfigured,
+      messagesSentToday: whatsappMessagesSentToday,
+      messagesReceivedToday: whatsappMessagesReceivedToday,
+      pendingApprovals: whatsappPendingApprovals,
+      approvalsDecidedToday: whatsappApprovalsDecidedToday,
+      optOutsToday: whatsappOptOutsToday,
+      note: whatsappProviderConfigured
+        ? `WhatsApp capability is configured; ${whatsappMessagesSentToday} sent / ${whatsappMessagesReceivedToday} received today, ${whatsappPendingApprovals} approval(s) pending, ${whatsappOptOutsToday} opt-out(s) today.`
+        : `WhatsApp sending/receiving is not configured (no WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID/WHATSAPP_BUSINESS_ACCOUNT_ID); any counts below reflect locally-ingested test/mock data only.`,
     },
   };
 }

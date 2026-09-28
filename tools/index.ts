@@ -6,6 +6,7 @@ import { filesTool } from "./files";
 import { browserTool } from "./browser";
 import { computerTool } from "./computer";
 import { emailTool } from "./email/emailTool";
+import { whatsappTool } from "./whatsapp/whatsappTool";
 import { calendarTool } from "./calendar";
 import { voiceTool } from "./voice";
 import { webTool } from "./web";
@@ -21,6 +22,7 @@ export function registerBuiltinTools(): void {
     browserTool,
     computerTool,
     emailTool,
+    whatsappTool,
     calendarTool,
     voiceTool,
     webTool,

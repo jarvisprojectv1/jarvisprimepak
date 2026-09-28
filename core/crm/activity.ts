@@ -33,3 +33,13 @@ export async function recordActivity(input: RecordActivityInput) {
 export async function listActivityForEntity(relatedEntityId: string) {
   return prisma.communication.findMany({ where: { relatedEntityId }, orderBy: { createdAt: "desc" } });
 }
+
+/**
+ * Phase 8 (item 21): the unified cross-channel timeline for one contact - a
+ * READ-MODEL over the existing Communication rows (already channel-tagged),
+ * not a new stored table. Every channel this system logs activity for
+ * (email, whatsapp, system/CRM events) appears together, ordered by time.
+ */
+export async function listUnifiedTimelineForContact(contactId: string, limit = 100) {
+  return prisma.communication.findMany({ where: { contactId }, orderBy: { createdAt: "desc" }, take: limit });
+}

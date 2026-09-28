@@ -16,6 +16,29 @@ export function computeIdempotencyKey(parts: { taskId?: string | null; contactEm
   return crypto.createHash("sha256").update(basis).digest("hex");
 }
 
+/**
+ * Phase 8 (item 23): the channel-generalized idempotency key, used ONLY by
+ * tools/whatsapp/whatsappTool.ts. computeIdempotencyKey() above is left
+ * completely UNTOUCHED and is still what tools/email/emailTool.ts calls -
+ * this is a new, additive function, not a modification of the email key
+ * shape (so no existing email idempotency key changes). `channel` is folded
+ * into the hash basis so an email send and a WhatsApp send to the "same"
+ * recipient/content can never collide on the same OutboundSendLog row. Both
+ * functions feed the SAME reserveIdempotencyKey()/recordSendAttempt()
+ * mechanism below - not a second, divergent idempotency system.
+ */
+export function computeChannelIdempotencyKey(parts: {
+  channel?: "EMAIL" | "WHATSAPP";
+  taskId?: string | null;
+  recipient?: string | null;
+  subject?: string;
+  body: string;
+}): string {
+  const channel = parts.channel ?? "EMAIL";
+  const basis = `${channel}|${parts.taskId ?? ""}|${parts.recipient ?? ""}|${contentHash(parts.subject ?? "", parts.body)}`;
+  return crypto.createHash("sha256").update(basis).digest("hex");
+}
+
 export interface IdempotencyCheck {
   alreadySent: boolean;
   existing?: { id: string; status: string; providerMessageId: string | null };
@@ -49,6 +72,7 @@ export async function reserveIdempotencyKey(input: {
   idempotencyKey: string;
   taskId?: string | null;
   contactId?: string | null;
+  channel?: "EMAIL" | "WHATSAPP";
 }): Promise<ReservationResult> {
   try {
     await prisma.outboundSendLog.create({
@@ -56,6 +80,7 @@ export async function reserveIdempotencyKey(input: {
         idempotencyKey: input.idempotencyKey,
         taskId: input.taskId ?? null,
         contactId: input.contactId ?? null,
+        channel: input.channel ?? "EMAIL",
         status: "SENDING",
       },
     });
@@ -90,6 +115,7 @@ export async function recordSendAttempt(input: {
   emailId?: string | null;
   status: "SENT" | "FAILED" | "BLOCKED";
   providerMessageId?: string | null;
+  channel?: "EMAIL" | "WHATSAPP";
 }) {
   const existing = await prisma.outboundSendLog.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
   if (existing && existing.status === "SENT") return existing; // never re-write a confirmed send
@@ -107,6 +133,7 @@ export async function recordSendAttempt(input: {
       emailId: input.emailId ?? null,
       status: input.status,
       providerMessageId: input.providerMessageId ?? null,
+      channel: input.channel ?? "EMAIL",
     },
   });
 }

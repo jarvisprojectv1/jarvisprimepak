@@ -27,6 +27,90 @@ export function normalizeDomain(input: string | null | undefined): string | null
   return value || null;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8 (WhatsApp, item 9): phone normalization - the gap Phase 7.1
+// explicitly disclosed and deferred ("Phone normalization does NOT currently
+// exist"). WhatsApp identity is phone-number-based, so this is now load-
+// bearing for contact resolution (core/whatsapp/conversation.ts), not just a
+// nice-to-have CRM field.
+//
+// Design: a lightweight, dependency-free normalizer targeting E.164 canonical
+// form (e.g. "+923001234567"), with EXPLICIT Pakistan-specific handling
+// (Prime Pak Packages is a Pakistan-based business - see docs/PHASE8_WHATSAPP.md)
+// for the leading-zero/00-prefix/bare-national-number cases a generic E.164
+// parser can't disambiguate without a country hint. A number this cannot
+// PARSE WITH CONFIDENCE is rejected (`valid: false`, `normalized: null`) -
+// never guessed. This function NEVER merges two different raw numbers into
+// one contact by itself; it only produces the canonical key
+// core/crm/dedup.ts's findOrCreateContactByPhone() then matches on exactly,
+// same "no fuzzy matching" discipline as normalizeEmail().
+// ---------------------------------------------------------------------------
+export interface PhoneNormalizationResult {
+  /** E.164-style canonical form ("+<countrycode><nationalnumber>"), or null if unparseable. */
+  normalized: string | null;
+  valid: boolean;
+  reason: string;
+}
+
+const PK_COUNTRY_CODE = "92";
+
+/**
+ * Normalizes a raw phone string to E.164-style canonical form. Tolerant of
+ * spaces, hyphens, parentheses, and dots. Handles, specifically:
+ *   - "+923001234567"            (already E.164)
+ *   - "00923001234567"           (00 international prefix)
+ *   - "923001234567"             (bare country code, no leading +)
+ *   - "03001234567"              (Pakistani local mobile/landline, leading 0)
+ *   - "3001234567"               (bare Pakistani mobile, no leading 0)
+ *   - "+92 0300 1234567"         (country code PLUS a stray local leading 0 -
+ *                                  a common real-world user typo, stripped)
+ * Anything that doesn't confidently resolve to one of these shapes (too
+ * short, too long, no digits, ambiguous) is rejected rather than guessed.
+ */
+export function normalizePhone(input: string | null | undefined): PhoneNormalizationResult {
+  if (!input) return { normalized: null, valid: false, reason: "Empty input." };
+  const raw = input.trim();
+  if (!raw) return { normalized: null, valid: false, reason: "Empty input." };
+
+  const hadPlus = raw.startsWith("+");
+  // Strip everything but digits (spaces, hyphens, parens, dots, the '+' itself).
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return { normalized: null, valid: false, reason: "No digits found." };
+
+  const hadInternationalPrefix = hadPlus || digits.startsWith("00");
+  if (!hadPlus && digits.startsWith("00")) {
+    digits = digits.slice(2);
+  }
+
+  if (hadInternationalPrefix) {
+    // A country code is already present. Guard against the common
+    // "+92 0300 1234567" typo (country code immediately followed by a stray
+    // local trunk '0') by stripping that one extra zero.
+    if (digits.startsWith(`${PK_COUNTRY_CODE}0`)) {
+      digits = PK_COUNTRY_CODE + digits.slice(PK_COUNTRY_CODE.length + 1);
+    }
+  } else if (digits.startsWith("0") && (digits.length === 10 || digits.length === 11)) {
+    // Pakistani local number (mobile: 03XX-XXXXXXX = 11 digits; landline:
+    // 0XX-XXXXXXX = 10 digits) - drop the trunk '0', prepend the country code.
+    digits = PK_COUNTRY_CODE + digits.slice(1);
+  } else if (/^3\d{9}$/.test(digits)) {
+    // Bare 10-digit Pakistani mobile number, no leading 0 and no country code.
+    digits = PK_COUNTRY_CODE + digits;
+  }
+  // Else: assume `digits` already includes a plausible country code as typed
+  // (e.g. "923001234567" bare, no + and no leading 0) - fall through to
+  // the general E.164 shape check below.
+
+  if (digits.length < 8 || digits.length > 15) {
+    return { normalized: null, valid: false, reason: `Digit count ${digits.length} outside the plausible E.164 range (8-15) after normalization.` };
+  }
+  if (digits.startsWith("0")) {
+    return { normalized: null, valid: false, reason: "Cannot reliably determine a country code for a leading-zero number without a known country context." };
+  }
+
+  return { normalized: `+${digits}`, valid: true, reason: "Normalized to E.164-style canonical form." };
+}
+
 export interface CompanyDedupInput {
   name: string;
   website?: string | null;
@@ -136,6 +220,57 @@ export async function findOrCreateContact(input: ContactDedupInput): Promise<Ded
     },
   });
   return { record: created, isNew: true, possibleDuplicate, matchReason };
+}
+
+export interface ContactPhoneDedupInput {
+  firstName: string;
+  lastName?: string | null;
+  rawPhone: string;
+  companyId?: string | null;
+}
+
+export type ContactPhoneResolution =
+  | { outcome: "RESOLVED"; record: { id: string; firstName: string; lastName: string | null; normalizedPhone: string | null; possibleDuplicate: boolean }; isNew: boolean; matchReason: string }
+  | { outcome: "UNRESOLVED"; reason: string };
+
+/**
+ * Finds-or-creates a Contact by normalized phone number (Phase 8, items 7-9)
+ * - the WhatsApp analogue of findOrCreateContact()'s email-based matching.
+ * Exact match key: normalizedPhone (E.164-style, via normalizePhone() above).
+ * A phone number that fails to normalize with confidence returns
+ * `{ outcome: "UNRESOLVED" }` rather than creating/attaching a contact under
+ * a guessed identity - the caller (core/whatsapp/conversation.ts) is
+ * responsible for routing this to a human-review state, never silently
+ * dropping or mis-attaching the message. This function NEVER merges two
+ * DIFFERENT normalized numbers into one contact - only an exact normalized-
+ * phone match is ever treated as "the same person."
+ */
+export async function findOrCreateContactByPhone(input: ContactPhoneDedupInput): Promise<ContactPhoneResolution> {
+  const { normalized, valid, reason } = normalizePhone(input.rawPhone);
+  if (!valid || !normalized) {
+    return { outcome: "UNRESOLVED", reason: `Phone number could not be reliably normalized: ${reason}` };
+  }
+
+  const existing = await prisma.contact.findFirst({ where: { normalizedPhone: normalized } });
+  if (existing) {
+    return {
+      outcome: "RESOLVED",
+      record: existing,
+      isNew: false,
+      matchReason: `Matched existing contact by normalized phone "${normalized}".`,
+    };
+  }
+
+  const created = await prisma.contact.create({
+    data: {
+      firstName: input.firstName,
+      lastName: input.lastName ?? null,
+      phone: input.rawPhone,
+      normalizedPhone: normalized,
+      companyId: input.companyId ?? null,
+    },
+  });
+  return { outcome: "RESOLVED", record: created, isNew: true, matchReason: `No existing match for normalized phone "${normalized}"; created new contact.` };
 }
 
 export interface LeadDedupInput {
